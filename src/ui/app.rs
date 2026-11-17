@@ -492,8 +492,8 @@ impl App {
                     });
                     w::section_title(ui, &p, "DNS");
                     w::group(ui, &p, |ui| {
-                        self.bool_row(ui, "DNS из JSON", "Использовать DNS, который прописал провайдер в конфигурации.", "dnsFromJson");
-                        self.bool_row(ui, "Свой DNS туннеля", "Иначе используется DNS системы, как без VPN.", "customDns");
+                        self.bool_row(ui, "DNS из JSON", "DNS, который прописал провайдер в конфигурации. Если он не ответит, используется DNS системы.", "dnsFromJson");
+                        self.bool_row(ui, "Свой DNS туннеля", "Ваш DoH/DoT или IP-адрес DNS; запросы идут через VPN. Выключено — DNS системы.", "customDns");
                         if store::get().b("customDns") { self.value_row(ui, "Адрес DNS", "https://…/dns-query, tls://…, IP-адрес", "tunnelDns", false); }
                     });
                     w::section_title(ui, &p, "Локальный прокси");
@@ -573,7 +573,16 @@ impl App {
     }
     fn bool_row(&mut self, ui: &mut Ui, title: &str, subtitle: &str, key: &str) {
         let mut v = store::get().b(key);
-        if w::switch_row(ui, &self.pal, title, subtitle, &mut v) { let k = key.to_string(); store::update(|s| s.set(&k, v.into())); self.after_change(key); }
+        if w::switch_row(ui, &self.pal, title, subtitle, &mut v) {
+            let k = key.to_string();
+            store::update(|s| {
+                s.set(&k, v.into());
+                // Provider DNS and own DNS are alternatives: turning one on turns the other off.
+                if v && k == "dnsFromJson" { s.set("customDns", false.into()); }
+                if v && k == "customDns" { s.set("dnsFromJson", false.into()); }
+            });
+            self.after_change(key);
+        }
     }
     fn pick_row(&mut self, ui: &mut Ui, title: &str, subtitle: &str, key: &str, options: &[(&str, &str)]) {
         let mut v = store::get().s(key); let mut changed = false;

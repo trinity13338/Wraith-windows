@@ -345,3 +345,10 @@ fn provider_dns_gets_the_system_resolver_as_fallback() {
     assert!(c.o("routing").unwrap().objects("rules").iter().any(|r| r.s("port") == "53" && r.a("ip").map(|a| a.contains(&json!("192.168.1.138"))).unwrap_or(false) && r.s("outboundTag") == "direct"));
     xray_accepts(&c, "dns-fallback");
 }
+
+#[test]
+fn own_dns_wins_over_provider_dns() {
+    let p = profile(BALANCER);
+    let c = crate::xray::build(&state(json!({"dnsFromJson": true, "customDns": true, "tunnelDns": "https://dns.example.com/dns-query"})), &p, &["192.168.1.138".into()], 1).unwrap().config;
+    assert_eq!(c.o("dns").unwrap().a("servers").unwrap()[0], json!("https://dns.example.com/dns-query"));
+}

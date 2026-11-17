@@ -81,8 +81,8 @@ fn inbounds(s: &Obj, tun: bool) -> Result<Vec<Value>, String> {
 
 fn dns(state: &AppState, p: &Profile, system_dns: &[String]) -> Obj {
     let s = &state.settings;
-    let mut value = if s.b("dnsFromJson", false) { routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote") } else { String::new() };
-    if value.is_empty() { value = routing::custom_dns(s); }
+    let mut value = routing::custom_dns(s);
+    if value.is_empty() && s.b("dnsFromJson", false) { value = routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote"); }
     let remote = if !value.is_empty() { server(&value, "remote", true) }
         else if let Some(ip) = system_dns.first() { obj! {"type" => "udp", "tag" => "remote", "server" => ip} }
         else { server(routing::DEFAULT_CUSTOM, "remote", true) };

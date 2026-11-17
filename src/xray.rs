@@ -43,7 +43,8 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
 
     // A provider "api" block opens its own gRPC listener that can add or remove outbounds; Wraith owns every entry point.
     for f in ["api", "remarks", "name", "meta", "version", "reverse"] { root.remove(f); }
-    if root.o("dns").is_none() || !settings.b("dnsFromJson", false) { root.insert("dns".into(), dns(state, profile, system_dns).into()); }
+    // The user's own DNS wins; the provider's DNS only with «DNS из JSON» and no own DNS.
+    if root.o("dns").is_none() || !settings.b("dnsFromJson", false) || !routing::custom_dns(settings).is_empty() { root.insert("dns".into(), dns(state, profile, system_dns).into()); }
     else if !system_dns.is_empty() {
         // The provider's DNS may be unreachable from the VPN server (a resolver that only answers some
         // networks): the system's resolvers follow as a fallback, so names still resolve.
@@ -310,8 +311,8 @@ pub fn unique_tag(outbounds: &[Value], base: &str) -> String {
 /// Provider DNS (with «DNS из JSON»), else the user's own DNS (with «Свой DNS»), else the system's resolvers.
 fn dns(state: &AppState, p: &Profile, system_dns: &[String]) -> Obj {
     let s = &state.settings;
-    let mut value = if s.b("dnsFromJson", false) { routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote") } else { String::new() };
-    if value.is_empty() { value = routing::custom_dns(s); }
+    let mut value = routing::custom_dns(s);
+    if value.is_empty() && s.b("dnsFromJson", false) { value = routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote"); }
     let mut servers: Vec<Value> = if !value.is_empty() { vec![value.into()] } else { system_dns.iter().map(|ip| ip.clone().into()).collect() };
     if servers.is_empty() { servers.push(routing::DEFAULT_CUSTOM.into()); }
     obj! {"servers" => servers, "queryStrategy" => match crate::model::ip_mode(s).as_str() { "v4" => "UseIPv4", "v6" => "UseIPv6", _ => "UseIP" }}
