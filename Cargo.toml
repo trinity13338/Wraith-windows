@@ -1,6 +1,6 @@
 [package]
 name = "wraith"
-version = "0.11.1"
+version = "0.11.2"
 edition = "2021"
 description = "Wraith VPN client for Windows (Xray + sing-box)"
 license = "GPL-3.0-or-later"

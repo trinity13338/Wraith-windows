@@ -334,3 +334,14 @@ fn windows_updater_picks_the_newest_release_with_a_windows_build() {
     assert_eq!(r.version, "0.11.1"); assert!(r.available);
     assert!(!crate::subs::updater::parse_list(&list.to_string(), "0.11.1").unwrap().available);
 }
+
+#[test]
+fn provider_dns_gets_the_system_resolver_as_fallback() {
+    let p = profile(BALANCER);
+    let c = crate::xray::build(&state(json!({"dnsFromJson": true})), &p, &["192.168.1.138".into()], 1).unwrap().config;
+    let servers = c.o("dns").unwrap().a("servers").unwrap().clone();
+    assert_eq!(servers[0], json!("1.1.1.1"));
+    assert_eq!(servers.last().unwrap(), &json!("192.168.1.138"));
+    assert!(c.o("routing").unwrap().objects("rules").iter().any(|r| r.s("port") == "53" && r.a("ip").map(|a| a.contains(&json!("192.168.1.138"))).unwrap_or(false) && r.s("outboundTag") == "direct"));
+    xray_accepts(&c, "dns-fallback");
+}

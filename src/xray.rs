@@ -44,6 +44,12 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     // A provider "api" block opens its own gRPC listener that can add or remove outbounds; Wraith owns every entry point.
     for f in ["api", "remarks", "name", "meta", "version", "reverse"] { root.remove(f); }
     if root.o("dns").is_none() || !settings.b("dnsFromJson", false) { root.insert("dns".into(), dns(state, profile, system_dns).into()); }
+    else if !system_dns.is_empty() {
+        // The provider's DNS may be unreachable from the VPN server (a resolver that only answers some
+        // networks): the system's resolvers follow as a fallback, so names still resolve.
+        let servers = child_list(child(&mut root, "dns"), "servers");
+        for ip in system_dns { if !servers.iter().any(|s| routing::dns_host(s) == *ip) { servers.push(ip.clone().into()); } }
+    }
 
     let client_inlets = client_inbound_tags(root.a("inbounds"));
     root.insert("inbounds".into(), Value::Array(inbounds(settings, tun)?));
@@ -61,7 +67,7 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     let mut head: Vec<Value> = vec![];
     if tun { head.push(json!({"type": "field", "inboundTag": ["tun-in"], "network": "tcp,udp", "port": "53", "outboundTag": dns_tag})); }
     // The system's own resolvers live in the local/ISP network and are queried directly, as without VPN.
-    if !settings.b("dnsFromJson", false) && routing::custom_dns(settings).is_empty() && !system_dns.is_empty() {
+    if routing::custom_dns(settings).is_empty() && !system_dns.is_empty() {
         head.push(json!({"type": "field", "ip": system_dns, "port": "53", "outboundTag": app[1]}));
     }
     // Observatory/balancers resolve their candidates independently of the balancer they measure.
