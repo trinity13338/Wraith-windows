@@ -1,0 +1,16 @@
+{"remarks":"Auto","dns":{"servers":["1.1.1.1"]},
+ "inbounds":[{"tag":"socks-in","protocol":"socks","listen":"127.0.0.1","port":10808,"settings":{"udp":true}},
+   {"tag":"http-in","protocol":"http","listen":"127.0.0.1","port":10809},
+   {"tag":"dns-in","protocol":"dokodemo-door","listen":"127.0.0.1","port":5353,"settings":{"address":"1.1.1.1","port":53,"network":"udp"}}],
+ "outbounds":[
+   {"tag":"proxy-nl","protocol":"vless","settings":{"vnext":[{"address":"192.0.2.1","port":443,"users":[{"id":"00948d0e-1437-0005-abfe-bb90bf6bc89a","encryption":"none"}]}]}},
+   {"tag":"proxy-de","protocol":"vless","settings":{"vnext":[{"address":"198.51.100.2","port":8443,"users":[{"id":"00948d0e-1437-0005-abfe-bb90bf6bc89a","encryption":"none"}]}]}},
+   {"tag":"proxy-fi","protocol":"trojan","settings":{"servers":[{"address":"203.0.113.3","port":443,"password":"secret"}]},"streamSettings":{"security":"tls"}},
+   {"protocol":"freedom"},{"tag":"frag","protocol":"freedom","settings":{"fragment":{"packets":"tlshello","length":"10-20","interval":"10-20"}}},
+   {"tag":"block","protocol":"blackhole"},{"tag":"dns-out","protocol":"dns"}],
+ "observatory":{"subjectSelector":["proxy-"],"probeUrl":"https://www.gstatic.com/generate_204","probeInterval":"1m"},
+ "api":{"tag":"api","listen":"0.0.0.0:10085","services":["HandlerService"]},
+ "log":{"loglevel":"warning","access":"C:/Windows/evil.log","error":"C:/x.log"},
+ "routing":{"domainStrategy":"IPIfNonMatch","balancers":[{"tag":"auto","selector":["proxy-"],"strategy":{"type":"leastPing"},"fallbackTag":"proxy-nl"}],
+   "rules":[{"type":"field","inboundTag":["dns-in"],"outboundTag":"dns-out"},{"type":"field","domain":["domain:example.ru"],"outboundTag":"direct"},
+     {"type":"field","inboundTag":["socks-in","http-in"],"balancerTag":"auto"}]}}
