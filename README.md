@@ -1,6 +1,6 @@
 # Wraith for Windows
 
-Native Windows VPN client in Rust (egui) for VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC / AnyTLS / WireGuard, with two cores: **Xray** and **sing-box**. This is the Windows edition of [Wraith for Android](https://github.com/trinity13338/wraith).
+Native Windows VPN client in Rust (egui) for VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC / AnyTLS / WireGuard, with two cores: **Xray** and **sing-box**. This is the Windows edition of [Wraith for Android](https://github.com/trinity13338/Wraith-android).
 
 > Русский: Wraith для Windows — нативный клиент на Rust с ядрами Xray и sing-box. Он понимает подписки (с заголовками Happ), JSON Xray и sing-box, авто-конфиги с балансировщиками. Работает в режимах системного прокси и TUN, в стиле Material 3.
 
