@@ -1,6 +1,5 @@
 //! Share links, subscription bodies and JSON configs → server rows.
-//! Everything Xray can run stays for Xray (the provider's JSON is used verbatim); TUIC, AnyTLS,
-//! WireGuard, obfuscated Hysteria2, HTTP/2 / QUIC transports and sing-box JSON go to sing-box.
+//! Everything is converted for Xray; the provider's JSON is used verbatim.
 
 use crate::json::{base64_text, readable, Get, Obj};
 use crate::model::Profile;
@@ -9,7 +8,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub const LOCAL_PROTOCOLS: &[&str] = &["freedom", "blackhole", "dns", "loopback"];
-const SINGBOX_TYPES: &[&str] = &["vless", "vmess", "trojan", "shadowsocks", "socks", "http", "hysteria2", "hysteria", "tuic", "anytls", "wireguard", "ssh"];
 
 #[derive(Default)]
 pub struct ImportResult {
@@ -19,8 +17,8 @@ pub struct ImportResult {
     pub json: bool,
 }
 
-/// Error type that tells the caller "Xray can't run this link, try sing-box".
-enum LinkError { NotXray, Bad(String) }
+/// Link conversion error.
+enum LinkError { Bad(String) }
 impl From<String> for LinkError { fn from(s: String) -> Self { LinkError::Bad(s) } }
 impl From<&str> for LinkError { fn from(s: &str) -> Self { LinkError::Bad(s.to_string()) } }
 
@@ -28,7 +26,7 @@ impl From<&str> for LinkError { fn from(s: &str) -> Self { LinkError::Bad(s.to_s
 pub fn unwrap(input: &str) -> Result<String, String> {
     let mut s = input.trim().trim_start_matches('\u{FEFF}').to_string();
     if s.starts_with("happ://crypt") || s.starts_with("happ://limited") || s.starts_with("happ://hwid") {
-        return Err("Эта ссылка зашифрована сторонним клиентом. Нужна обычная ссылка подписки от провайдера.".into());
+        return Err(crate::tr!("Эта ссылка зашифрована сторонним клиентом. Нужна обычная ссылка подписки от провайдера.", "This link is encrypted for another client. Ask your provider for a regular subscription link.").into());
     }
     for prefix in ["happ://add/", "wraith://add/", "wraith://import/"] {
         if s.to_ascii_lowercase().starts_with(prefix) { s = s[prefix.len()..].to_string(); if !s.starts_with("https://") && !s.starts_with("http://") { s = decode(&s); } break; }
@@ -42,7 +40,7 @@ pub fn is_subscription_url(s: &str) -> bool { s.to_ascii_lowercase().starts_with
 
 pub fn parse(raw: &str) -> Result<ImportResult, String> {
     let s = raw.trim().trim_start_matches('\u{FEFF}').to_string();
-    if s.is_empty() { return Err("Вставьте ссылку, JSON или адрес подписки.".into()); }
+    if s.is_empty() { return Err(crate::tr!("Вставьте ссылку, JSON или адрес подписки.", "Paste a link, JSON or subscription address.").into()); }
     let mut result = ImportResult::default();
     if s.starts_with('{') {
         result.json = true;
@@ -51,7 +49,7 @@ pub fn parse(raw: &str) -> Result<ImportResult, String> {
     }
     if s.starts_with('[') {
         result.json = true;
-        let items: Vec<Value> = serde_json::from_str(&s).map_err(|e| format!("Некорректный JSON: {e}"))?;
+        let items: Vec<Value> = serde_json::from_str(&s).map_err(|e| crate::trf!("Некорректный JSON: {e}", "Invalid JSON: {e}"))?;
         for item in items {
             let Some(o) = item.as_object() else { continue };
             match from_json(o, &serde_json::to_string(o).unwrap_or_default()) { Ok(p) => result.profiles.push(p), Err(e) => result.skipped.push(crate::log::safe(e)) }
@@ -59,7 +57,7 @@ pub fn parse(raw: &str) -> Result<ImportResult, String> {
     } else {
         let mut text = s.clone();
         if !text.contains("://") {
-            text = base64_text(&text).map_err(|_| "Не удалось распознать ссылку, JSON или Base64-подписку.".to_string())?;
+            text = base64_text(&text).map_err(|_| crate::tr!("Не удалось распознать ссылку, JSON или Base64-подписку.", "Could not recognise the link, JSON or Base64 subscription.").to_string())?;
             let t = text.trim(); if t.starts_with('{') || t.starts_with('[') { return parse(t); }
         }
         for line in text.lines() {
@@ -73,13 +71,13 @@ pub fn parse(raw: &str) -> Result<ImportResult, String> {
         if !result.routing_link.is_empty() && !result.routing_link.starts_with("happ://routing/off") {
             match crate::routing::decode(&result.routing_link) {
                 Ok(r) => for p in result.profiles.iter_mut() { if !p.full { p.routing = Some(r.clone()); } },
-                Err(e) => crate::log::add(format!("Профиль маршрутизации не разобран: {e}")),
+                Err(e) => crate::log::add(crate::trf!("Профиль маршрутизации не разобран: {e}", "Routing profile could not be read: {e}")),
             }
         }
     }
     if result.profiles.is_empty() {
-        if let Some(first) = result.skipped.first() { return Err(format!("Ни одна строка не поддерживается ({}). {first}", result.skipped.len())); }
-        return Err("Не найдено серверов поддерживаемого формата.".into());
+        if let Some(first) = result.skipped.first() { return Err(crate::trf!("Ни одна строка не поддерживается ({}). {first}", "No line is supported ({}). {first}", result.skipped.len())); }
+        return Err(crate::tr!("Не найдено серверов поддерживаемого формата.", "No servers in a supported format.").into());
     }
     Ok(result)
 }
@@ -99,16 +97,7 @@ pub fn looks_like_xray(root: &Obj) -> bool {
 
 fn from_json(o: &Obj, raw: &str) -> Result<Profile, String> {
     if looks_like_xray(o) { return from_xray_document(o, raw); }
-    if o.has("outbounds") {
-        // A complete sing-box config stays intact; the core validates it before start.
-        let proxies: Vec<&Obj> = o.objects("outbounds").into_iter().filter(|x| SINGBOX_TYPES.contains(&x.s("type").as_str())).collect();
-        let mut p = Profile { name: o.first(&["name", "tag", "remarks"]), source: raw.into(), engine: "singbox".into(), full: true, singbox: Some(o.clone()), protocol: "sing-box".into(), servers: proxies.len().max(1) as i64, ..Default::default() };
-        if p.name.is_empty() { p.name = "sing-box JSON".into(); }
-        if let Some(f) = proxies.first() { p.host = f.s("server"); p.port = f.i("server_port", 0); }
-        return Ok(p);
-    }
-    if SINGBOX_TYPES.contains(&o.s("type").as_str()) { return Ok(singbox_profile(o.clone(), &o.first(&["tag", "name"]), raw, "")); }
-    Err("Ожидается конфигурация Xray или sing-box с исходящими подключениями.".into())
+    Err(crate::tr!("Это не конфигурация Xray (JSON sing-box не поддерживается).", "This is not an Xray configuration (sing-box JSON is not supported).").into())
 }
 
 /// One provider Xray document = one row; its servers stay inside the document.
@@ -117,12 +106,12 @@ pub fn from_xray_document(root: &Obj, raw: &str) -> Result<Profile, String> {
     let outbounds: Vec<&Obj> = match root.a("outbounds") {
         Some(a) => a.iter().filter_map(|v| v.as_object()).collect(),
         None if root.has("protocol") => single.iter().filter_map(|v| v.as_object()).collect(),
-        None => return Err("В конфигурации Xray нет исходящих подключений.".into()),
+        None => return Err(crate::tr!("В конфигурации Xray нет исходящих подключений.", "The Xray configuration has no outbounds.").into()),
     };
     let proxies: Vec<&Obj> = outbounds.into_iter().filter(|o| !LOCAL_PROTOCOLS.contains(&o.s("protocol").to_ascii_lowercase().as_str())).collect();
-    if proxies.is_empty() { return Err("В конфигурации Xray нет прокси, только direct/block.".into()); }
+    if proxies.is_empty() { return Err(crate::tr!("В конфигурации Xray нет прокси, только direct/block.", "The Xray configuration has no proxy, only direct/block.").into()); }
     let endpoints: Vec<Endpoint> = proxies.iter().flat_map(|p| endpoints(p)).collect();
-    let first = endpoints.first().ok_or("Не удалось прочитать адрес сервера в конфигурации Xray.")?;
+    let first = endpoints.first().ok_or(crate::tr!("Не удалось прочитать адрес сервера в конфигурации Xray.", "Could not read the server address in the Xray configuration."))?;
     let mut name = root.first(&["remarks", "name"]);
     if name.is_empty() { name = proxies[0].s_or("tag", "Xray"); }
     Ok(Profile {
@@ -140,6 +129,13 @@ pub fn endpoints(outbound: &Obj) -> Vec<Endpoint> {
     let protocol = outbound.s("protocol").to_ascii_lowercase();
     let empty = Obj::new();
     let settings = outbound.o("settings").unwrap_or(&empty);
+    if protocol == "wireguard" {
+        // "host:port" (or "[v6]:port") of each peer.
+        return settings.objects("peers").into_iter().filter_map(|p| {
+            let e = p.s("endpoint"); let (h, port) = e.rsplit_once(':')?;
+            Some(Endpoint { protocol: protocol.clone(), host: h.trim_matches(['[', ']']).to_string(), port: port.parse().unwrap_or(0), transport: "udp".into(), security: String::new(), tag: outbound.s("tag") })
+        }).collect();
+    }
     let stream = outbound.o("streamSettings");
     let mut network = stream.first(&["network", "type"]).to_ascii_lowercase(); if network.is_empty() { network = "tcp".into(); }
     let mut security = stream.s("security").to_ascii_lowercase(); if security == "none" { security.clear(); }
@@ -192,7 +188,7 @@ pub struct Link { pub scheme: String, pub user_info: String, pub host: String, p
 
 /// Split without a URL parser: provider links carry raw spaces and emoji that strict parsers reject.
 pub fn split(text: &str) -> Result<Link, String> {
-    let mark = text.find("://").ok_or("Это не ссылка подключения.")?;
+    let mark = text.find("://").ok_or(crate::tr!("Это не ссылка подключения.", "This is not a connection link."))?;
     let mut l = Link { scheme: text[..mark].to_ascii_lowercase(), port: -1, ..Default::default() };
     let mut rest = text[mark + 3..].to_string();
     if let Some(hash) = rest.find('#') {
@@ -210,7 +206,7 @@ pub fn split(text: &str) -> Result<Link, String> {
     if let Some(slash) = rest.find('/') { rest.truncate(slash); }
     if let Some(at) = rest.rfind('@') { l.user_info = rest[..at].to_string(); rest = rest[at + 1..].to_string(); }
     if rest.starts_with('[') {
-        let close = rest.find(']').ok_or("Незакрытый IPv6-адрес в ссылке.")?;
+        let close = rest.find(']').ok_or(crate::tr!("Незакрытый IPv6-адрес в ссылке.", "Unclosed IPv6 address in the link."))?;
         l.host = rest[1..close].to_string();
         if let Some(t) = rest[close + 1..].strip_prefix(':') { l.port = number(t)?; }
     } else if let Some(colon) = rest.rfind(':') {
@@ -221,46 +217,31 @@ pub fn split(text: &str) -> Result<Link, String> {
         else { l.port = number(tail)?; }
     } else { l.host = rest; }
     l.host = l.host.trim().to_string();
-    if l.host.is_empty() { return Err("В ссылке нет адреса сервера.".into()); }
+    if l.host.is_empty() { return Err(crate::tr!("В ссылке нет адреса сервера.", "The link has no server address.").into()); }
     Ok(l)
 }
-fn number(v: &str) -> Result<i64, String> { v.trim().parse().map_err(|_| format!("Некорректный порт в ссылке: {v}")) }
+fn number(v: &str) -> Result<i64, String> { v.trim().parse().map_err(|_| crate::trf!("Некорректный порт в ссылке: {v}", "Invalid port in the link: {v}")) }
 
 pub fn from_link(text: &str) -> Result<Profile, String> {
     match link_to_xray(text) {
         Ok(mut outbound) => {
-            let e = endpoints(&outbound).into_iter().next().ok_or("В ссылке нет адреса сервера.")?;
+            let e = endpoints(&outbound).into_iter().next().ok_or(crate::tr!("В ссылке нет адреса сервера.", "The link has no server address."))?;
             let name = outbound.s("_name"); let description = outbound.s("_description");
             outbound.remove("_name"); outbound.remove("_description");
             Ok(Profile { name: if name.is_empty() { e.host.clone() } else { name }, source: text.into(), engine: "xray".into(), protocol: e.protocol, host: e.host, port: e.port, transport: e.transport, security: e.security, description, ..Default::default() })
         }
         Err(LinkError::Bad(e)) => Err(e),
-        Err(LinkError::NotXray) => {
-            // Something Xray cannot express (TUIC, AnyTLS, obfuscated Hysteria2, HTTP/2 transport…): sing-box runs it.
-            let sb = link_to_singbox(text)?;
-            let l = split(text).ok();
-            Ok(singbox_profile(sb, &l.as_ref().map(|l| l.fragment.clone()).unwrap_or_default(), text, &l.map(|l| l.description).unwrap_or_default()))
-        }
-    }
-}
-
-fn singbox_profile(o: Obj, name: &str, source: &str, description: &str) -> Profile {
-    let tls = o.o("tls");
-    Profile {
-        name: if name.is_empty() { o.s_or("server", "Сервер") } else { name.into() }, source: source.into(), engine: "singbox".into(),
-        protocol: o.s("type"), host: o.s("server"), port: o.i("server_port", 0),
-        security: match tls { None => String::new(), Some(t) if t.o("reality").map(|r| r.b("enabled", false)).unwrap_or(false) => "reality".into(), Some(_) => "tls".into() },
-        transport: o.o("transport").s("type"), description: description.into(), singbox: Some(o), ..Default::default()
     }
 }
 
 /// Share link → native Xray outbound tagged "proxy".
 fn link_to_xray(text: &str) -> Result<Obj, LinkError> {
-    let scheme = text[..text.find("://").ok_or("Это не ссылка подключения.")?].to_ascii_lowercase();
+    let scheme = text[..text.find("://").ok_or(crate::tr!("Это не ссылка подключения.", "This is not a connection link."))?].to_ascii_lowercase();
     match scheme.as_str() {
         "vmess" => return vmess(text),
         "ss" => return shadowsocks(text).map_err(LinkError::Bad),
-        "tuic" | "anytls" | "wireguard" | "wg" | "ssh" => return Err(LinkError::NotXray),
+        "wireguard" | "wg" => return wireguard(text),
+        "tuic" | "anytls" | "ssh" => return Err(crate::trf!("{} не поддерживается Xray.", "{} is not supported by Xray.", scheme.to_uppercase()).into()),
         _ => {}
     }
     let text = if ["socks", "socks5", "socks4", "http"].contains(&scheme.as_str()) { expand_base64_address(text, &scheme) } else { text.to_string() };
@@ -270,11 +251,11 @@ fn link_to_xray(text: &str) -> Result<Obj, LinkError> {
     let qm = &l.query;
     let security = q(qm, "", &["security"]);
     if l.port < 1 && (l.scheme == "trojan" || l.scheme == "hysteria2" || security == "tls" || security == "reality") { l.port = 443; }
-    if !(1..=65535).contains(&l.port) { return Err("В ссылке нет корректного порта сервера.".into()); }
+    if !(1..=65535).contains(&l.port) { return Err(crate::tr!("В ссылке нет корректного порта сервера.", "The link has no valid server port.").into()); }
     let auth = decode(&l.user_info);
     let mut outbound = match l.scheme.as_str() {
         "vless" => {
-            if auth.is_empty() { return Err("В ссылке VLESS нет UUID.".into()); }
+            if auth.is_empty() { return Err(crate::tr!("В ссылке VLESS нет UUID.", "The VLESS link has no UUID.").into()); }
             let mut user = obj! {"id" => auth, "encryption" => q(qm, "none", &["encryption"])};
             let flow = q(qm, "", &["flow"]); if !flow.is_empty() { user.insert("flow".into(), flow.into()); }
             obj! {"protocol" => "vless", "settings" => json!({"vnext": [{"address": l.host, "port": l.port, "users": [user]}]})}
@@ -287,7 +268,7 @@ fn link_to_xray(text: &str) -> Result<Obj, LinkError> {
             obj! {"protocol" => l.scheme, "settings" => json!({"servers": [server]})}
         }
         "hysteria2" => {
-            if !q(qm, "", &["obfs"]).is_empty() { return Err(LinkError::NotXray); }
+            if !q(qm, "", &["obfs"]).is_empty() { return Err(crate::tr!("Hysteria2 с obfs не поддерживается Xray.", "Hysteria2 with obfs is not supported by Xray.").into()); }
             let mut hy = obj! {"version" => 2, "auth" => auth};
             let hops = q(qm, &l.ports, &["mport", "ports"]);
             if !hops.is_empty() {
@@ -298,16 +279,15 @@ fn link_to_xray(text: &str) -> Result<Obj, LinkError> {
             let mut tls = obj! {"serverName" => q(qm, &l.host, &["sni", "peer", "serverName"])};
             let alpn = q(qm, "", &["alpn"]);
             tls.insert("alpn".into(), if alpn.is_empty() { json!(["h3"]) } else { json!(alpn.split(',').collect::<Vec<_>>()) });
-            // Xray 26 removed allowInsecure: an unverified certificate without a pin runs on sing-box.
             let pin = q(qm, "", &["pinSHA256", "pinnedPeerCertSha256", "pcs"]).replace(':', "").to_ascii_lowercase();
-            if flag(qm, &["insecure", "allowInsecure"]) && pin.is_empty() { return Err(LinkError::NotXray); }
+            // Xray 26 removed allowInsecure: the certificate is verified (pinned when the link has a pin).
             if !pin.is_empty() { tls.insert("pinnedPeerCertSha256".into(), pin.into()); }
             let mut o = obj! {"protocol" => "hysteria", "tag" => "proxy", "settings" => json!({"version": 2, "address": l.host, "port": l.port}),
                 "streamSettings" => json!({"network": "hysteria", "hysteriaSettings": hy, "security": "tls", "tlsSettings": tls})};
             o.insert("_name".into(), l.fragment.clone().into()); o.insert("_description".into(), l.description.clone().into());
             return Ok(o);
         }
-        other => return Err(format!("Неизвестный протокол: {other}").into()),
+        other => return Err(crate::trf!("Неизвестный протокол: {other}", "Unknown protocol: {other}").into()),
     };
     outbound.insert("tag".into(), "proxy".into());
     let stream = stream(qm, &l.host, l.scheme == "trojan")?;
@@ -352,7 +332,7 @@ fn stream(qm: &HashMap<String, String>, host: &str, tls_by_default: bool) -> Res
             let mut x = obj! {"path" => path}; if !host_header.is_empty() { x.insert("host".into(), host_header.into()); }
             let mode = q(qm, "", &["mode"]); if !mode.is_empty() { x.insert("mode".into(), mode.into()); }
             let extra = q(qm, "", &["extra"]);
-            if !extra.is_empty() { x.insert("extra".into(), serde_json::from_str::<Value>(&extra).map_err(|_| "Параметр extra в ссылке XHTTP — некорректный JSON.")?); }
+            if !extra.is_empty() { x.insert("extra".into(), serde_json::from_str::<Value>(&extra).map_err(|_| crate::tr!("Параметр extra в ссылке XHTTP — некорректный JSON.", "The extra parameter of the XHTTP link is not valid JSON."))?); }
             s.insert("network".into(), "xhttp".into()); s.insert("xhttpSettings".into(), x.into());
         }
         "kcp" | "mkcp" => {
@@ -361,9 +341,9 @@ fn stream(qm: &HashMap<String, String>, host: &str, tls_by_default: bool) -> Res
             let seed = q(qm, "", &["seed"]); if !seed.is_empty() { k.insert("seed".into(), seed.into()); }
             s.insert("network".into(), "kcp".into()); s.insert("kcpSettings".into(), k.into());
         }
-        // HTTP/2 and QUIC transports were removed from Xray; sing-box still speaks them.
-        "http" | "h2" | "quic" => return Err(LinkError::NotXray),
-        other => return Err(format!("Транспорт {other} не поддерживается.").into()),
+        // HTTP/2 and QUIC transports were removed from Xray.
+        "http" | "h2" | "quic" => return Err(crate::trf!("Транспорт {kind} больше не поддерживается Xray.", "Transport {kind} is no longer supported by Xray.").into()),
+        other => return Err(crate::trf!("Транспорт {other} не поддерживается.", "Transport {other} is not supported.").into()),
     }
     match security.as_str() {
         "tls" => {
@@ -371,7 +351,7 @@ fn stream(qm: &HashMap<String, String>, host: &str, tls_by_default: bool) -> Res
             let fp = q(qm, "", &["fp", "fingerprint"]); if !fp.is_empty() { t.insert("fingerprint".into(), fp.into()); }
             let alpn = q(qm, "", &["alpn"]); if !alpn.is_empty() { t.insert("alpn".into(), json!(alpn.split(',').collect::<Vec<_>>())); }
             let pin = q(qm, "", &["pinnedPeerCertSha256", "pcs"]);
-            if flag(qm, &["allowInsecure", "insecure"]) && pin.is_empty() { return Err(LinkError::NotXray); }
+            // Xray 26 removed allowInsecure: the certificate is verified (pinned when the link has a pin).
             if !pin.is_empty() { t.insert("pinnedPeerCertSha256".into(), pin.into()); }
             let ech = q(qm, "", &["ech", "echConfigList"]); if !ech.is_empty() { t.insert("echConfigList".into(), ech.into()); }
             s.insert("security".into(), "tls".into()); s.insert("tlsSettings".into(), t.into());
@@ -380,11 +360,11 @@ fn stream(qm: &HashMap<String, String>, host: &str, tls_by_default: bool) -> Res
             let mut r = obj! {"serverName" => q(qm, host, &["sni", "serverName"]), "fingerprint" => q(qm, "chrome", &["fp", "fingerprint"]), "publicKey" => q(qm, "", &["pbk", "publicKey"]), "shortId" => q(qm, "", &["sid", "shortId"])};
             let spx = q(qm, "", &["spx", "spiderX"]); if !spx.is_empty() { r.insert("spiderX".into(), spx.into()); }
             let pqv = q(qm, "", &["pqv", "mldsa65Verify"]); if !pqv.is_empty() { r.insert("mldsa65Verify".into(), pqv.into()); }
-            if r.s("publicKey").is_empty() { return Err("В ссылке Reality нет публичного ключа (pbk).".into()); }
+            if r.s("publicKey").is_empty() { return Err(crate::tr!("В ссылке Reality нет публичного ключа (pbk).", "The Reality link has no public key (pbk).").into()); }
             s.insert("security".into(), "reality".into()); s.insert("realitySettings".into(), r.into());
         }
         "none" | "" => {}
-        other => return Err(format!("Шифрование {other} не поддерживается.").into()),
+        other => return Err(crate::trf!("Шифрование {other} не поддерживается.", "Security {other} is not supported.").into()),
     }
     Ok(s)
 }
@@ -411,7 +391,7 @@ fn vmess(s: &str) -> Result<Obj, LinkError> {
         Some(v) => v,
         None => {
             // Some panels emit vmess:// as a plain URI.
-            let l = split(s)?; if l.port < 1 { return Err("Не удалось разобрать ссылку VMess.".into()); }
+            let l = split(s)?; if l.port < 1 { return Err(crate::tr!("Не удалось разобрать ссылку VMess.", "Could not read the VMess link.").into()); }
             let auth = decode(&l.user_info); let id = auth.splitn(2, ':').last().unwrap_or("").to_string();
             let mut o = obj! {"protocol" => "vmess", "tag" => "proxy", "settings" => json!({"vnext": [{"address": l.host, "port": l.port, "users": [{"id": id, "security": q(&l.query, "auto", &["encryption"])}]}]})};
             let st = stream(&l.query, &l.host, false)?; if !st.is_empty() { o.insert("streamSettings".into(), st.into()); }
@@ -419,9 +399,9 @@ fn vmess(s: &str) -> Result<Obj, LinkError> {
         }
     };
     let address = v.first(&["add", "address", "host"]).replace(['[', ']'], "");
-    if address.is_empty() { return Err("В ссылке VMess нет адреса сервера.".into()); }
-    let id = v.first(&["id", "uuid"]); if id.is_empty() { return Err("В ссылке VMess нет UUID.".into()); }
-    let port: i64 = v.s("port").trim().parse().map_err(|_| "Некорректный порт в ссылке VMess.")?;
+    if address.is_empty() { return Err(crate::tr!("В ссылке VMess нет адреса сервера.", "The VMess link has no server address.").into()); }
+    let id = v.first(&["id", "uuid"]); if id.is_empty() { return Err(crate::tr!("В ссылке VMess нет UUID.", "The VMess link has no UUID.").into()); }
+    let port: i64 = v.s("port").trim().parse().map_err(|_| crate::tr!("Некорректный порт в ссылке VMess.", "Invalid port in the VMess link."))?;
     let mut scy = v.first(&["scy", "security"]); if scy.is_empty() { scy = "auto".into(); }
     let mut qm = HashMap::new();
     for k in ["path", "host", "sni", "fp", "alpn", "serviceName", "mode", "authority"] { let val = v.s(k); if !val.is_empty() { qm.insert(k.to_ascii_lowercase(), val); } }
@@ -444,151 +424,43 @@ fn shadowsocks(s: &str) -> Result<Obj, String> {
         name = decode(&fragment); data.truncate(h);
     }
     if let Some(qm) = data.find('?') {
-        if query(&data[qm + 1..]).get("plugin").map(|p| !p.is_empty()).unwrap_or(false) { return Err("Shadowsocks с plugin не поддерживается.".into()); }
+        if query(&data[qm + 1..]).get("plugin").map(|p| !p.is_empty()).unwrap_or(false) { return Err(crate::tr!("Shadowsocks с plugin не поддерживается.", "Shadowsocks with a plugin is not supported.").into()); }
         data.truncate(qm);
     }
     let data = data.trim_end_matches('/').to_string();
     let data = if data.contains('@') { data } else { base64_text(&data)? };
-    let at = data.rfind('@').ok_or("Некорректная ссылка Shadowsocks.")?;
+    let at = data.rfind('@').ok_or(crate::tr!("Некорректная ссылка Shadowsocks.", "Invalid Shadowsocks link."))?;
     let user = &data[..at];
     let user = if user.contains(':') { decode(user) } else { base64_text(&decode(user))? };
     let mut auth = user.splitn(2, ':');
-    let (Some(method), Some(password)) = (auth.next(), auth.next()) else { return Err("В ссылке Shadowsocks нет пароля.".into()) };
+    let (Some(method), Some(password)) = (auth.next(), auth.next()) else { return Err(crate::tr!("В ссылке Shadowsocks нет пароля.", "The Shadowsocks link has no password.").into()) };
     let l = split(&format!("ss://{}", &data[at + 1..]))?;
-    if l.port < 1 { return Err("Некорректный адрес Shadowsocks.".into()); }
+    if l.port < 1 { return Err(crate::tr!("Некорректный адрес Shadowsocks.", "Invalid Shadowsocks address.").into()); }
     Ok(obj! {"protocol" => "shadowsocks", "tag" => "proxy", "settings" => json!({"servers": [{"address": l.host, "port": l.port, "method": method, "password": password}]}), "_name" => name, "_description" => description})
 }
 
-// ------------------------------------------------------------------ sing-box links
-
-/// Links Xray cannot run → sing-box outbound.
-fn link_to_singbox(text: &str) -> Result<Obj, String> {
-    let scheme = text[..text.find("://").unwrap_or(0)].to_ascii_lowercase();
-    if scheme == "vmess" { return Err("VMess с транспортом HTTP/2 или QUIC не поддерживается.".into()); }
-    let mut l = split(text)?;
-    if l.scheme == "hy2" { l.scheme = "hysteria2".into(); }
-    if l.scheme == "wg" { l.scheme = "wireguard".into(); }
-    if l.port < 1 { l.port = 443; }
-    let qm = &l.query; let auth = decode(&l.user_info);
-    let mut o = obj! {"type" => l.scheme, "server" => l.host, "server_port" => l.port};
-    match l.scheme.as_str() {
-        "vless" => { if q(qm, "none", &["encryption"]) != "none" { return Err("VLESS encryption не поддерживается sing-box.".into()); } o.insert("uuid".into(), auth.into()); let flow = q(qm, "", &["flow"]); if !flow.is_empty() { o.insert("flow".into(), flow.into()); o.insert("packet_encoding".into(), "xudp".into()); } }
-        "trojan" | "anytls" | "hysteria2" => { o.insert("password".into(), auth.into()); }
-        "tuic" => {
-            let mut it = auth.splitn(2, ':');
-            let (Some(uuid), Some(pw)) = (it.next(), it.next()) else { return Err("TUIC требует UUID и пароль.".into()) };
-            o.insert("uuid".into(), uuid.into()); o.insert("password".into(), pw.into()); o.insert("congestion_control".into(), q(qm, "bbr", &["congestion_control", "congestion"]).into());
-        }
-        "wireguard" => {
-            o.insert("private_key".into(), auth.into()); o.insert("peer_public_key".into(), q(qm, "", &["publickey", "public_key"]).into());
-            let address = q(qm, "", &["address", "ip"]);
-            if !address.is_empty() { o.insert("local_address".into(), json!(address.split(',').map(|a| { let a = a.trim(); if a.contains('/') { a.to_string() } else if a.contains(':') { format!("{a}/128") } else { format!("{a}/32") } }).collect::<Vec<_>>())); }
-            let reserved = q(qm, "", &["reserved"]); if !reserved.is_empty() { o.insert("reserved".into(), json!(reserved.split(',').filter_map(|r| r.trim().parse::<i64>().ok()).collect::<Vec<_>>())); }
-            if let Ok(mtu) = q(qm, "", &["mtu"]).parse::<i64>() { o.insert("mtu".into(), mtu.into()); }
-            return Ok(o);
-        }
-        other => return Err(format!("Протокол {other} не поддерживается.")),
-    }
-    let security = q(qm, "", &["security"]);
-    if l.scheme != "vless" || security == "tls" || security == "reality" {
-        let mut tls = obj! {"enabled" => true, "server_name" => q(qm, &l.host, &["sni", "peer", "serverName"])};
-        if flag(qm, &["insecure", "allowInsecure"]) { tls.insert("insecure".into(), true.into()); }
-        let alpn = q(qm, "", &["alpn"]); if !alpn.is_empty() && security != "reality" { tls.insert("alpn".into(), json!(alpn.split(',').collect::<Vec<_>>())); }
-        let mut fp = q(qm, "", &["fp"]);
-        if security == "reality" { tls.insert("reality".into(), json!({"enabled": true, "public_key": q(qm, "", &["pbk"]), "short_id": q(qm, "", &["sid"])})); if fp.is_empty() { fp = "chrome".into(); } }
-        if !fp.is_empty() { tls.insert("utls".into(), json!({"enabled": true, "fingerprint": fingerprint(&fp)})); }
-        o.insert("tls".into(), tls.into());
-    }
-    let host_header = q(qm, "", &["host"]);
-    match q(qm, "tcp", &["type"]).to_ascii_lowercase().as_str() {
-        "ws" => { let mut t = obj! {"type" => "ws", "path" => q(qm, "/", &["path"])}; if !host_header.is_empty() { t.insert("headers".into(), json!({"Host": host_header})); } o.insert("transport".into(), t.into()); }
-        "grpc" => { o.insert("transport".into(), json!({"type": "grpc", "service_name": q(qm, "", &["serviceName"])})); }
-        "http" | "h2" => { let mut t = obj! {"type" => "http", "path" => q(qm, "/", &["path"])}; if !host_header.is_empty() { t.insert("host".into(), json!([host_header])); } o.insert("transport".into(), t.into()); }
-        "httpupgrade" => { let mut t = obj! {"type" => "httpupgrade", "path" => q(qm, "/", &["path"])}; if !host_header.is_empty() { t.insert("host".into(), host_header.into()); } o.insert("transport".into(), t.into()); }
-        "quic" => { o.insert("transport".into(), json!({"type": "quic"})); }
-        "tcp" | "raw" | "none" | "" => {}
-        other => return Err(format!("Транспорт {other} не поддерживается sing-box.")),
-    }
-    if l.scheme == "hysteria2" {
-        let obfs = q(qm, "", &["obfs"]); if !obfs.is_empty() { o.insert("obfs".into(), json!({"type": obfs, "password": q(qm, "", &["obfs-password", "obfs_password"])})); }
-        let hops = q(qm, &l.ports, &["mport", "ports"]);
-        if !hops.is_empty() {
-            let ranges: Vec<String> = hops.split(',').map(str::trim).filter(|v| !v.is_empty()).map(|v| if v.contains('-') { v.replace('-', ":") } else { format!("{v}:{v}") }).collect();
-            o.insert("server_ports".into(), json!(ranges)); o.insert("hop_interval".into(), format!("{}s", q(qm, "30", &["mportHopInt", "hopInterval"]).trim_end_matches('s')).into());
-        }
-    }
-    Ok(o)
-}
 pub fn fingerprint(v: &str) -> String {
     let v = v.trim().to_ascii_lowercase();
     if ["chrome", "firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized"].contains(&v.as_str()) { v } else { "chrome".into() }
 }
 
 /// The Xray outbound for a link row (the runtime rebuilds it from the stored link).
-pub fn link_outbound_for_runtime(s: &str) -> Result<Obj, String> {
-    match link_to_xray(s) { Ok(o) => Ok(o), Err(LinkError::NotXray) => Err("Этот сервер запускается через sing-box.".into()), Err(LinkError::Bad(e)) => Err(e) }
-}
+pub fn link_outbound_for_runtime(s: &str) -> Result<Obj, String> { link_to_xray(s).map_err(|LinkError::Bad(e)| e) }
 
-/// The row as it runs on the preferred core ("xray" or "singbox"). A link is converted when the
-/// other core can express it; anything else (Xray JSON, XHTTP, sing-box JSON…) keeps its own core.
-pub fn for_engine(p: &Profile, preferred: &str) -> Profile {
-    let link = !p.source.trim().starts_with('{') && !p.source.trim().starts_with('[') && p.source.contains("://");
-    if !link || p.full { return p.clone(); }
-    match (preferred, p.is_singbox()) {
-        ("singbox", false) => match link_to_singbox_any(&p.source) {
-            Ok(o) => Profile { engine: "singbox".into(), singbox: Some(o), ..p.clone() },
-            Err(_) => p.clone(),
-        },
-        ("xray", true) => match link_to_xray(&p.source) { Ok(_) => Profile { engine: "xray".into(), singbox: None, ..p.clone() }, Err(_) => p.clone() },
-        _ => p.clone(),
-    }
-}
-
-/// sing-box outbound for any link sing-box supports, including VMess, Shadowsocks and SOCKS/HTTP.
-fn link_to_singbox_any(text: &str) -> Result<Obj, String> {
-    let scheme = text[..text.find("://").unwrap_or(0)].to_ascii_lowercase();
-    match scheme.as_str() {
-        "vmess" | "ss" | "socks" | "socks5" | "http" => {
-            // Reuse the Xray conversion, then express the same server in sing-box terms.
-            let x = link_to_xray(text).map_err(|e| match e { LinkError::Bad(e) => e, LinkError::NotXray => "Не поддерживается".into() })?;
-            xray_to_singbox(&x)
-        }
-        _ => link_to_singbox(text),
-    }
-}
-
-fn xray_to_singbox(x: &Obj) -> Result<Obj, String> {
-    let e = endpoints(x).into_iter().next().ok_or("Нет адреса сервера.")?;
-    let settings = x.o("settings").cloned().unwrap_or_default();
-    let mut o = obj! {"server" => e.host, "server_port" => e.port};
-    match x.s("protocol").as_str() {
-        "vmess" => {
-            let user = settings.objects("vnext").first().and_then(|v| v.objects("users").first().map(|u| (*u).clone())).unwrap_or_default();
-            o.insert("type".into(), "vmess".into()); o.insert("uuid".into(), user.s("id").into());
-            o.insert("security".into(), user.s_or("security", "auto").into()); o.insert("alter_id".into(), user.i("alterId", 0).into());
-        }
-        "shadowsocks" => {
-            let s = settings.objects("servers").first().map(|s| (*s).clone()).unwrap_or_default();
-            o.insert("type".into(), "shadowsocks".into()); o.insert("method".into(), s.s("method").into()); o.insert("password".into(), s.s("password").into());
-        }
-        p @ ("socks" | "http") => {
-            o.insert("type".into(), p.into());
-            if let Some(u) = settings.objects("servers").first().and_then(|s| s.objects("users").first().map(|u| (*u).clone())) { o.insert("username".into(), u.s("user").into()); o.insert("password".into(), u.s("pass").into()); }
-        }
-        other => return Err(format!("{other}: используйте Xray")),
-    }
-    let stream = x.o("streamSettings").cloned().unwrap_or_default();
-    match stream.s("security").as_str() {
-        "tls" => { let t = stream.o("tlsSettings").cloned().unwrap_or_default(); let mut tls = obj! {"enabled" => true, "server_name" => t.s_or("serverName", &e.host)}; if !t.s("fingerprint").is_empty() { tls.insert("utls".into(), json!({"enabled": true, "fingerprint": fingerprint(&t.s("fingerprint"))})); } o.insert("tls".into(), tls.into()); }
-        "reality" => return Err("Reality для VMess не поддерживается sing-box".into()),
-        _ => {}
-    }
-    match stream.s("network").as_str() {
-        "" | "raw" | "tcp" => {}
-        "ws" => { let w = stream.o("wsSettings").cloned().unwrap_or_default(); let mut t = obj! {"type" => "ws", "path" => w.s_or("path", "/")}; if !w.s("host").is_empty() { t.insert("headers".into(), json!({"Host": w.s("host")})); } o.insert("transport".into(), t.into()); }
-        "grpc" => { o.insert("transport".into(), json!({"type": "grpc", "service_name": stream.o("grpcSettings").s("serviceName")})); }
-        "httpupgrade" => { let h = stream.o("httpupgradeSettings").cloned().unwrap_or_default(); o.insert("transport".into(), json!({"type": "httpupgrade", "path": h.s_or("path", "/"), "host": h.s("host")})); }
-        other => return Err(format!("Транспорт {other}: используйте Xray")),
-    }
-    Ok(o)
+/// wireguard://<private key>@host:port?publickey=…&address=…&reserved=…&mtu=…
+fn wireguard(text: &str) -> Result<Obj, LinkError> {
+    let l = split(text)?; let qm = &l.query;
+    let key = decode(&l.user_info); if key.is_empty() { return Err(crate::tr!("В ссылке WireGuard нет приватного ключа.", "The WireGuard link has no private key.").into()); }
+    let public = q(qm, "", &["publickey", "public_key", "peer_public_key"]); if public.is_empty() { return Err(crate::tr!("В ссылке WireGuard нет публичного ключа сервера.", "The WireGuard link has no server public key.").into()); }
+    let port = if l.port > 0 { l.port } else { 51820 };
+    let host = if l.host.contains(':') { format!("[{}]", l.host) } else { l.host.clone() };
+    let address: Vec<String> = q(qm, "", &["address", "ip"]).split(',').map(str::trim).filter(|a| !a.is_empty()).map(|a| if a.contains('/') { a.to_string() } else if a.contains(':') { format!("{a}/128") } else { format!("{a}/32") }).collect();
+    let mut peer = obj! {"publicKey" => public, "endpoint" => format!("{host}:{port}"), "allowedIPs" => ["0.0.0.0/0", "::/0"]};
+    let psk = q(qm, "", &["presharedkey", "psk"]); if !psk.is_empty() { peer.insert("preSharedKey".into(), psk.into()); }
+    let mut settings = obj! {"secretKey" => key, "peers" => [peer]};
+    if !address.is_empty() { settings.insert("address".into(), json!(address)); }
+    let reserved: Vec<i64> = q(qm, "", &["reserved"]).split(',').filter_map(|r| r.trim().parse().ok()).collect();
+    if !reserved.is_empty() { settings.insert("reserved".into(), json!(reserved)); }
+    if let Ok(mtu) = q(qm, "", &["mtu"]).parse::<i64>() { settings.insert("mtu".into(), mtu.into()); }
+    Ok(obj! {"protocol" => "wireguard", "tag" => "proxy", "settings" => settings, "_name" => l.fragment, "_description" => l.description})
 }

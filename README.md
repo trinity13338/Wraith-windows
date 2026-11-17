@@ -1,8 +1,8 @@
 # Wraith for Windows
 
-Native Windows VPN client in Rust (egui) for VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC / AnyTLS / WireGuard, with two cores: **Xray** and **sing-box**. This is the Windows edition of [Wraith for Android](https://github.com/trinity13338/Wraith-android).
+Native Windows VPN client in Rust (egui) for VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / WireGuard on **Xray-core**. This is the Windows edition of [Wraith for Android](https://github.com/trinity13338/Wraith-android).
 
-> Русский: Wraith для Windows — нативный клиент на Rust с ядрами Xray и sing-box. Он понимает подписки (с заголовками Happ), JSON Xray и sing-box, авто-конфиги с балансировщиками. Работает в режимах системного прокси и TUN, в стиле Material 3.
+> Русский: Wraith для Windows — нативный клиент на Rust на ядре Xray. Он понимает подписки (с заголовками Happ), JSON Xray и авто-конфиги с балансировщиками. Язык интерфейса — русский или английский, по языку системы. Работает в режимах системного прокси и TUN, в стиле Material 3.
 
 <p>
 <img src="docs/screens/windows-home-dark.png" width="420">
@@ -21,8 +21,8 @@ Get the latest [release](https://github.com/trinity13338/Wraith-windows/releases
 
 ## Features
 
-- **Import.** Share links, HTTPS subscriptions with Happ headers (usage, expiry, announce, routing profile), and full Xray and sing-box JSON, including multi-server configs with balancers (`leastPing` + `observatory`).
-- **Two cores**, chosen on the home screen. A server the selected core cannot run uses the other one automatically.
+- **Import.** Share links, HTTPS subscriptions with Happ headers (usage, expiry, announce, routing profile), and full Xray JSON, including multi-server configs with balancers (`leastPing` + `observatory`).
+- **Russian or English** interface, picked from the Windows display language.
 - **System proxy and TUN** as independent switches; both are on by default. In TUN mode, routing rules can match programs (`.exe`).
 - **Latency checks through the proxy.**
   - Every server of an auto config is checked, and the best result counts.
@@ -47,7 +47,6 @@ cargo build --release
 Put the following next to `target/release/Wraith.exe`:
 
 - `xray.exe`, `geoip.dat` and `geosite.dat` from the [Xray-core release](https://github.com/XTLS/Xray-core/releases);
-- `sing-box.exe`, built from sing-box 1.14.1 with `third_party/wraith-core/apply.sh` (tags `with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api`);
 - `wintun.dll` from [wintun.net](https://www.wintun.net).
 
 The installer is the same program built with `--features setup`. The release zip is embedded through the `WRAITH_PAYLOAD` environment variable:

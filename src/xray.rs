@@ -19,7 +19,7 @@ pub fn source(p: &Profile) -> Result<Obj, String> {
     let s = p.source.trim();
     if s.starts_with('{') {
         let root = crate::json::parse_obj(s)?;
-        if !importer::looks_like_xray(&root) { return Err("Это не конфигурация Xray.".into()); }
+        if !importer::looks_like_xray(&root) { return Err(crate::tr!("Это не конфигурация Xray.", "This is not an Xray configuration.").into()); }
         if root.a("outbounds").is_none() && root.has("protocol") {
             let mut outbound = root.clone();
             for f in ["dns", "routing", "log", "remarks", "name", "meta", "env"] { outbound.remove(f); }
@@ -30,7 +30,7 @@ pub fn source(p: &Profile) -> Result<Obj, String> {
         }
         return Ok(root);
     }
-    if s.is_empty() { return Err("У сервера нет исходной ссылки.".into()); }
+    if s.is_empty() { return Err(crate::tr!("У сервера нет исходной ссылки.", "The server has no source link.").into()); }
     let mut outbound = importer::link_outbound_for_runtime(s)?;
     outbound.remove("_name"); outbound.remove("_description");
     Ok(obj! {"outbounds" => [outbound]})
@@ -123,7 +123,7 @@ pub fn prepare(profile: &Profile, settings: &Obj, source: &Obj, expected: Option
     let pin = pin_candidate || (!settings.b("autoSelect", false) && !provider_balancing(&root));
     if pin {
         let outbounds = child_list(&mut root, "outbounds");
-        let index = outbounds.iter().position(|o| o.s("tag") == tag).ok_or("Не найден выбранный Xray outbound.")?;
+        let index = outbounds.iter().position(|o| o.s("tag") == tag).ok_or(crate::tr!("Не найден выбранный Xray outbound.", "The selected Xray outbound was not found."))?;
         let mut chosen = outbounds.remove(index);
         if let Some(peers) = chosen.get_mut("settings").and_then(|v| v.as_object_mut()) {
             for key in ["vnext", "servers"] {
@@ -153,7 +153,7 @@ pub fn prepare(profile: &Profile, settings: &Obj, source: &Obj, expected: Option
             if dependency.is_empty() { outbound.remove("proxySettings"); }
             else if legacy.b("transportLayer", false) {
                 let sockopt = child(child(outbound, "streamSettings"), "sockopt");
-                if sockopt.has("dialerProxy") && sockopt.s("dialerProxy") != dependency { return Err("В JSON конфликтуют proxySettings и dialerProxy.".into()); }
+                if sockopt.has("dialerProxy") && sockopt.s("dialerProxy") != dependency { return Err(crate::tr!("В JSON конфликтуют proxySettings и dialerProxy.", "proxySettings and dialerProxy conflict in the JSON.").into()); }
                 sockopt.insert("dialerProxy".into(), dependency.into()); outbound.remove("proxySettings");
             }
         }
@@ -162,7 +162,7 @@ pub fn prepare(profile: &Profile, settings: &Obj, source: &Obj, expected: Option
     if let Some(outbounds) = root.get_mut("outbounds").and_then(|v| v.as_array_mut()) {
         for outbound in objects_mut(outbounds) {
             if let Some(tls) = outbound.get_mut("streamSettings").and_then(|s| s.get_mut("tlsSettings")).and_then(|t| t.as_object_mut()) {
-                if tls.remove("allowInsecure").is_some() { crate::log::add(format!("{}: allowInsecure удалён (Xray 26 его не поддерживает), сертификат будет проверяться.", outbound_tag_hint(tls))); }
+                if tls.remove("allowInsecure").is_some() { crate::log::add(crate::trf!("{}: allowInsecure удалён (Xray 26 его не поддерживает), сертификат будет проверяться.", "{}: allowInsecure removed (Xray 26 does not support it), the certificate will be verified.", outbound_tag_hint(tls))); }
             }
         }
     }
@@ -225,7 +225,7 @@ fn remap_inbound_rules(root: &mut Obj, inlets: &HashSet<String>, ours: &[&str]) 
 
 /// Tag of the outbound serving `expected` (or the first proxy); an untagged one is named.
 pub fn proxy_tag(root: &mut Obj, expected: Option<&Endpoint>) -> Result<String, String> {
-    let outbounds = root.get_mut("outbounds").and_then(|v| v.as_array_mut()).ok_or("В конфигурации Xray нет outbounds.")?;
+    let outbounds = root.get_mut("outbounds").and_then(|v| v.as_array_mut()).ok_or(crate::tr!("В конфигурации Xray нет outbounds.", "The Xray configuration has no outbounds."))?;
     let mut chosen = None; let mut first = None;
     for (i, o) in outbounds.iter().enumerate() {
         let Some(o) = o.as_object() else { continue };
@@ -235,7 +235,7 @@ pub fn proxy_tag(root: &mut Obj, expected: Option<&Endpoint>) -> Result<String, 
             if endpoints(o).iter().any(|x| x.host.eq_ignore_ascii_case(&e.host) && x.port == e.port && (e.protocol.is_empty() || x.protocol == e.protocol)) { chosen = Some(i); break; }
         }
     }
-    let index = chosen.or(first).ok_or("В конфигурации Xray нет прокси-outbound.")?;
+    let index = chosen.or(first).ok_or(crate::tr!("В конфигурации Xray нет прокси-outbound.", "The Xray configuration has no proxy outbound."))?;
     let tag = outbounds[index].s("tag");
     if !tag.is_empty() { return Ok(tag); }
     let tag = unique_tag(outbounds, "proxy");
@@ -257,8 +257,9 @@ fn observatory_dns_ips(root: &Obj) -> Vec<String> {
 pub fn inbounds(s: &Obj, tun: bool) -> Result<Vec<Value>, String> {
     let mut list = vec![];
     if tun {
-        let mtu = s.i("mtu", 1500); if !(1280..=9000).contains(&mtu) { return Err("MTU должен быть от 1280 до 9000.".into()); }
-        let mut routes = vec!["0.0.0.0/0"]; if crate::model::ip_mode(s) != "v4" { routes.push("::/0"); }
+        let mtu = s.i("mtu", 1500); if !(1280..=9000).contains(&mtu) { return Err(crate::tr!("MTU должен быть от 1280 до 9000.", "MTU must be between 1280 and 9000.").into()); }
+        // Two halves of the address space beat the Ethernet default route whatever the interface metrics are.
+        let mut routes = vec!["0.0.0.0/1", "128.0.0.0/1"]; if crate::model::ip_mode(s) != "v4" { routes.push("::/1"); routes.push("8000::/1"); }
         list.push(json!({"tag": "tun-in", "protocol": "tun",
             "settings": {"name": "Wraith", "MTU": mtu, "autoSystemRoutingTable": routes, "autoOutboundsInterface": "auto"},
             "sniffing": {"enabled": s.b("sniff", true), "routeOnly": true, "destOverride": ["http", "tls", "quic"]}}));
@@ -271,7 +272,7 @@ pub fn inbounds(s: &Obj, tun: bool) -> Result<Vec<Value>, String> {
         list.push(json!({"tag": "http", "listen": listen, "port": http_port, "protocol": "http", "settings": {}, "sniffing": sniff}));
     } else {
         // A LAN-reachable proxy without credentials is an open relay for everyone on the network.
-        let password = s.s("proxyPassword"); if password.chars().count() < 8 { return Err("Для доступа из локальной сети задайте пароль прокси не короче 8 символов.".into()); }
+        let password = s.s("proxyPassword"); if password.chars().count() < 8 { return Err(crate::tr!("Для доступа из локальной сети задайте пароль прокси не короче 8 символов.", "For access from the local network set a proxy password of at least 8 characters.").into()); }
         let accounts = json!([{"user": "wraith", "pass": password}]);
         list.push(json!({"tag": "socks", "listen": listen, "port": socks_port, "protocol": "socks", "settings": {"auth": "password", "accounts": accounts, "udp": true}, "sniffing": sniff}));
         list.push(json!({"tag": "http", "listen": listen, "port": http_port, "protocol": "http", "settings": {"accounts": accounts}, "sniffing": sniff}));
@@ -375,16 +376,16 @@ fn outbound_options(root: &mut Obj, s: &Obj, tag: &str) -> Result<(), String> {
     let primary = outbounds[index].as_object_mut().unwrap();
     let vision = primary.o("settings").map(|st| st.objects("vnext").iter().flat_map(|v| v.objects("users")).any(|u| u.s("flow").starts_with("xtls-rprx-vision"))).unwrap_or(false);
     if mux && !vision && ["vless", "vmess", "trojan", "shadowsocks"].contains(&protocol.as_str()) {
-        let concurrency = s.i("muxConnections", 4); if !(1..=1024).contains(&concurrency) { return Err("Мультиплексор: от 1 до 1024 потоков.".into()); }
+        let concurrency = s.i("muxConnections", 4); if !(1..=1024).contains(&concurrency) { return Err(crate::tr!("Мультиплексор: от 1 до 1024 потоков.", "Multiplexer: 1 to 1024 streams.").into()); }
         let m = child(primary, "mux"); m.insert("enabled".into(), true.into()); m.insert("concurrency".into(), concurrency.into());
     }
     Ok(())
 }
 pub fn fragment(s: &Obj) -> Result<Obj, String> {
     let mut packets = s.s_or("fragmentPackets", "tlshello").trim().to_ascii_lowercase();
-    if packets != "tlshello" && !packets.is_empty() { packets = range(&packets, "Фрагментирование пакетов", 1, 100)?; }
-    let mut o = obj! {"packets" => packets, "length" => range(&s.s_or("fragmentLength", "50-100"), "Длина фрагмента", 1, 16384)?, "interval" => range(&s.s_or("fragmentInterval", "10-20"), "Задержка фрагмента", 0, 1000)?};
-    let split = s.s("fragmentMaxSplit"); if !split.trim().is_empty() { o.insert("maxSplit".into(), range(&split, "Максимальное разделение", 1, 10000)?.into()); }
+    if packets != "tlshello" && !packets.is_empty() { packets = range(&packets, crate::tr!("Фрагментирование пакетов", "Packet fragmentation"), 1, 100)?; }
+    let mut o = obj! {"packets" => packets, "length" => range(&s.s_or("fragmentLength", "50-100"), crate::tr!("Длина фрагмента", "Fragment length"), 1, 16384)?, "interval" => range(&s.s_or("fragmentInterval", "10-20"), crate::tr!("Задержка фрагмента", "Fragment delay"), 0, 1000)?};
+    let split = s.s("fragmentMaxSplit"); if !split.trim().is_empty() { o.insert("maxSplit".into(), range(&split, crate::tr!("Максимальное разделение", "Maximum split"), 1, 10000)?.into()); }
     Ok(o)
 }
 pub fn noise(s: &Obj) -> Result<Obj, String> {
@@ -392,20 +393,20 @@ pub fn noise(s: &Obj) -> Result<Obj, String> {
     match kind.as_str() {
         "array" => {
             let mut hex = String::new();
-            for b in packet.split(',') { let b = b.trim().trim_start_matches("0x").trim_start_matches("0X"); let v = u8::from_str_radix(b, 16).map_err(|_| "Пакет шума: байты в hex через запятую, например 1A,2B,3C.")?; hex += &format!("{v:02x}"); }
+            for b in packet.split(',') { let b = b.trim().trim_start_matches("0x").trim_start_matches("0X"); let v = u8::from_str_radix(b, 16).map_err(|_| crate::tr!("Пакет шума: байты в hex через запятую, например 1A,2B,3C.", "Noise packet: hex bytes separated by commas, for example 1A,2B,3C."))?; hex += &format!("{v:02x}"); }
             packet = hex; kind = "hex".into();
         }
-        "rand" => packet = range(&s.s_or("noiseRand", "10-20"), "Размер шума", 1, 8192)?,
-        "str" => if packet.is_empty() { return Err("Пакет шума пуст.".into()); },
-        "hex" => if packet.is_empty() || packet.len() % 2 != 0 || !packet.chars().all(|c| c.is_ascii_hexdigit()) { return Err("Пакет hex должен содержать целые байты.".into()); },
-        _ => return Err("Тип шума: array, rand, str или hex.".into()),
+        "rand" => packet = range(&s.s_or("noiseRand", "10-20"), crate::tr!("Размер шума", "Noise size"), 1, 8192)?,
+        "str" => if packet.is_empty() { return Err(crate::tr!("Пакет шума пуст.", "The noise packet is empty.").into()); },
+        "hex" => if packet.is_empty() || packet.len() % 2 != 0 || !packet.chars().all(|c| c.is_ascii_hexdigit()) { return Err(crate::tr!("Пакет hex должен содержать целые байты.", "A hex packet must contain whole bytes.").into()); },
+        _ => return Err(crate::tr!("Тип шума: array, rand, str или hex.", "Noise type: array, rand, str or hex.").into()),
     }
-    Ok(obj! {"type" => kind, "packet" => packet, "delay" => range(&s.s_or("noiseDelay", "10-16"), "Задержка шума", 0, 1000)?})
+    Ok(obj! {"type" => kind, "packet" => packet, "delay" => range(&s.s_or("noiseDelay", "10-16"), crate::tr!("Задержка шума", "Noise delay"), 0, 1000)?})
 }
 pub fn range(v: &str, name: &str, min: i64, max: i64) -> Result<String, String> {
     let v = v.trim(); let mut parts = v.splitn(2, '-');
     let a: Option<i64> = parts.next().and_then(|x| x.parse().ok()); let b: Option<i64> = match parts.next() { Some(x) => x.parse().ok(), None => a };
-    match (a, b) { (Some(a), Some(b)) if a >= min && b <= max && a <= b => Ok(v.to_string()), (Some(_), Some(_)) => Err(format!("{name}: от {min} до {max}.")), _ => Err(format!("{name}: число или диапазон, например 10-20.")) }
+    match (a, b) { (Some(a), Some(b)) if a >= min && b <= max && a <= b => Ok(v.to_string()), (Some(_), Some(_)) => Err(crate::trf!("{name}: от {min} до {max}.", "{name}: from {min} to {max}.")), _ => Err(crate::trf!("{name}: число или диапазон, например 10-20.", "{name}: a number or a range, for example 10-20.")) }
 }
 
 // ------------------------------------------------------------------ latency probes
@@ -415,7 +416,7 @@ pub fn append_probe(profile: &Profile, settings: &Obj, source: &Obj, endpoint: &
     let mut root = prepare(profile, settings, source, Some(endpoint), true)?;
     let selected = proxy_tag(&mut root, Some(endpoint))?;
     let mut by_tag: HashMap<String, Obj> = HashMap::new();
-    for o in root.objects("outbounds") { let t = o.s("tag"); if t.is_empty() { continue; } if by_tag.insert(t.clone(), o.clone()).is_some() { return Err(format!("Повторяется outbound tag: {t}")); } }
+    for o in root.objects("outbounds") { let t = o.s("tag"); if t.is_empty() { continue; } if by_tag.insert(t.clone(), o.clone()).is_some() { return Err(crate::trf!("Повторяется outbound tag: {t}", "Duplicate outbound tag: {t}")); } }
     let mut deps = vec![]; collect(&selected, &by_tag, &mut deps, &mut HashSet::new())?;
     let renamed: HashMap<String, String> = deps.iter().enumerate().map(|(i, t)| (t.clone(), format!("wraith-probe-{index}-{i}"))).collect();
     for t in &deps {
@@ -432,8 +433,8 @@ pub fn append_probe(profile: &Profile, settings: &Obj, source: &Obj, endpoint: &
 }
 fn collect(tag: &str, by_tag: &HashMap<String, Obj>, ordered: &mut Vec<String>, visiting: &mut HashSet<String>) -> Result<(), String> {
     if ordered.iter().any(|t| t == tag) { return Ok(()); }
-    if !visiting.insert(tag.to_string()) { return Err(format!("Циклическая зависимость Xray outbound: {tag}")); }
-    let outbound = by_tag.get(tag).ok_or(format!("Не найдена зависимость Xray outbound: {tag}"))?;
+    if !visiting.insert(tag.to_string()) { return Err(crate::trf!("Циклическая зависимость Xray outbound: {tag}", "Circular Xray outbound dependency: {tag}")); }
+    let outbound = by_tag.get(tag).ok_or(crate::trf!("Не найдена зависимость Xray outbound: {tag}", "Xray outbound dependency not found: {tag}"))?;
     let dep = outbound.o("streamSettings").and_then(|s| s.o("sockopt")).map(|s| s.s("dialerProxy")).unwrap_or_default();
     if !dep.is_empty() { collect(&dep, by_tag, ordered, visiting)?; }
     visiting.remove(tag); ordered.push(tag.to_string()); Ok(())
@@ -464,4 +465,4 @@ pub fn probe_dns(dns: Option<&Obj>) -> Option<Obj> {
     }
     Some(out)
 }
-fn outbound_tag_hint(tls: &Obj) -> String { let n = tls.s("serverName"); if n.is_empty() { "Сервер".into() } else { n } }
+fn outbound_tag_hint(tls: &Obj) -> String { let n = tls.s("serverName"); if n.is_empty() { crate::tr!("Сервер", "Server").into() } else { n } }

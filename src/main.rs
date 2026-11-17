@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![recursion_limit = "512"]
-//! Wraith for Windows: Xray + sing-box VPN client (port of the Android app).
+//! Wraith for Windows: Xray VPN client.
 
 mod core;
+#[macro_use]
+mod i18n;
 mod importer;
 mod install;
 mod json;
@@ -11,7 +13,6 @@ mod model;
 mod pinger;
 mod routing;
 mod setup;
-mod singbox;
 mod store;
 mod subs;
 mod ui;
@@ -47,8 +48,8 @@ fn main() -> eframe::Result<()> {
     if let Some(t) = args.iter().find_map(|a| a.strip_prefix("--theme=")) { let t = t.to_string(); store::update(|s| s.set("theme", t.into())); }
     core::recover();
     install::clean_old_files();
-    std::panic::set_hook(Box::new(|info| { log::add(format!("Сбой: {info}")); core::shutdown(); }));
-    log::add(format!("Wraith {} запущен", env!("CARGO_PKG_VERSION")));
+    std::panic::set_hook(Box::new(|info| { log::add(crate::trf!("Сбой: {info}", "Crash: {info}")); core::shutdown(); }));
+    log::add(crate::trf!("Wraith {} запущен", "Wraith {} started", env!("CARGO_PKG_VERSION")));
 
     let icon = egui::IconData { rgba: ui::icon::rgba(64), width: 64, height: 64 };
     let options = eframe::NativeOptions {
@@ -65,7 +66,7 @@ fn main() -> eframe::Result<()> {
 fn demo() {
     if !store::get().profiles.is_empty() { return; }
     let sub = model::Subscription { id: "demo".into(), name: "My VPN Provider".into(), url: "https://example.com/sub".into(), updated: util::unix_now() - 3600,
-        user_info: format!("upload=1073741824; download=16106127360; total=107374182400; expire={}", util::unix_now() + 30 * 86400), announce: "Новые серверы в Финляндии уже доступны".into(), format: "links".into(), parsed: subs::PARSE_VERSION, ..Default::default() };
+        user_info: format!("upload=1073741824; download=16106127360; total=107374182400; expire={}", util::unix_now() + 30 * 86400), announce: crate::tr!("Новые серверы в Финляндии уже доступны", "New servers in Finland are available").into(), format: "links".into(), parsed: subs::PARSE_VERSION, ..Default::default() };
     let links = [
         ("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@de.example.com:443?type=tcp&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=01&sni=www.example.org&flow=xtls-rprx-vision#%F0%9F%87%A9%F0%9F%87%AA%20Germany%20%C2%B7%20Frankfurt", 42),
         ("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@nl.example.com:443?type=xhttp&security=tls&sni=nl.example.com&path=%2Fx#%F0%9F%87%B3%F0%9F%87%B1%20Netherlands", 58),

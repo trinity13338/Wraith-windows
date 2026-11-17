@@ -46,6 +46,6 @@ pub fn safe(msg: impl AsRef<str>) -> String {
     static ID: OnceLock<regex::Regex> = OnceLock::new();
     let url = URL.get_or_init(|| regex::Regex::new(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+").unwrap());
     let id = ID.get_or_init(|| regex::Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}").unwrap());
-    let m = url.replace_all(msg.as_ref(), "[адрес скрыт]");
+    let m = url.replace_all(msg.as_ref(), crate::tr!("[адрес скрыт]", "[address hidden]"));
     id.replace_all(&m, "[id]").into_owned()
 }

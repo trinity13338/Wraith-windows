@@ -36,7 +36,7 @@ pub struct Profile {
 }
 impl Default for Profile {
     fn default() -> Self {
-        Profile { id: crate::util::random_hex(16), name: "Сервер".into(), group: String::new(), source: String::new(), engine: "xray".into(), protocol: String::new(), host: String::new(), port: 0, transport: String::new(), security: String::new(), description: String::new(), servers: 1, balancer: false, singbox: None, full: false, routing: None, latency: -1, ping_error: String::new(), favorite: false }
+        Profile { id: crate::util::random_hex(16), name: crate::tr!("Сервер", "Server").into(), group: String::new(), source: String::new(), engine: "xray".into(), protocol: String::new(), host: String::new(), port: 0, transport: String::new(), security: String::new(), description: String::new(), servers: 1, balancer: false, singbox: None, full: false, routing: None, latency: -1, ping_error: String::new(), favorite: false }
     }
 }
 impl Profile {
@@ -47,7 +47,7 @@ impl Profile {
         let mut kind = if self.protocol.is_empty() { "JSON".to_string() } else { self.protocol.to_uppercase() };
         if !self.transport.is_empty() && !["tcp", "raw", "hysteria"].contains(&self.transport.as_str()) { kind += &format!(" · {}", self.transport); }
         if self.security == "reality" { kind += " · Reality" } else if self.security == "tls" { kind += " · TLS" }
-        if self.servers > 1 { return format!("{kind} · {} {}{}", self.servers, crate::util::plural(self.servers, "сервер", "сервера", "серверов"), if self.balancer { " · авто" } else { "" }); }
+        if self.servers > 1 { return format!("{kind} · {} {}{}", self.servers, crate::util::plural(self.servers, crate::tr!("сервер", "server"), crate::tr!("сервера", "servers"), crate::tr!("серверов", "servers")), if self.balancer { crate::tr!(" · авто", " · auto") } else { "" }); }
         // The address stays out of the list (screenshots, screen sharing); it is in the config view.
         kind
     }
@@ -78,7 +78,7 @@ pub struct Subscription {
 }
 impl Default for Subscription {
     fn default() -> Self {
-        Subscription { id: crate::util::random_hex(16), name: "Подписка".into(), url: String::new(), fallback_url: String::new(), interval_hours: 24, updated: 0, error: String::new(), format: String::new(), user_info: String::new(), announce: String::new(), routing_link: String::new(), routing_enabled: true, support_url: String::new(), web_page_url: String::new(), info_text: String::new(), parsed: 0, collapsed: false }
+        Subscription { id: crate::util::random_hex(16), name: crate::tr!("Подписка", "Subscription").into(), url: String::new(), fallback_url: String::new(), interval_hours: 24, updated: 0, error: String::new(), format: String::new(), user_info: String::new(), announce: String::new(), routing_link: String::new(), routing_enabled: true, support_url: String::new(), web_page_url: String::new(), info_text: String::new(), parsed: 0, collapsed: false }
     }
 }
 impl Subscription {
@@ -121,7 +121,7 @@ impl AppState {
 pub fn defaults() -> Obj {
     let v = json!({
         // Connection
-        "tunnelMode": "both", "core": "xray", "mode": "rules", "autoSelect": false, "bypassLan": true, "ipMode": "auto", "mtu": 1500, "sniff": true,
+        "tunnelMode": "both", "mode": "rules", "autoSelect": false, "bypassLan": true, "ipMode": "auto", "mtu": 1500, "sniff": true,
         // DNS: the system's resolvers unless the user opts into the provider's or their own.
         "dnsFromJson": false, "customDns": false, "tunnelDns": "https://8.8.8.8/dns-query",
         // Local proxy (127.0.0.1 only unless LAN access with a password)
@@ -141,11 +141,11 @@ pub fn defaults() -> Obj {
 }
 
 /// Kinds of user routing rules.
-pub const RULE_KINDS: &[(&str, &str)] = &[
-    ("domain_suffix", "Домен и поддомены"), ("domain", "Точный домен"), ("domain_keyword", "Слово в домене"), ("domain_regex", "Регулярное выражение"),
-    ("geosite", "GeoSite-категория"), ("ip_cidr", "IP / подсеть"), ("geoip", "GeoIP-страна"), ("process", "Программа (.exe)"),
-];
-pub fn rule_kind_label(k: &str) -> &str { RULE_KINDS.iter().find(|(key, _)| *key == k).map(|(_, l)| *l).unwrap_or(k) }
+pub fn rule_kinds() -> Vec<(&'static str, &'static str)> { vec![
+    ("domain_suffix", crate::tr!("Домен и поддомены", "Domain and subdomains")), ("domain", crate::tr!("Точный домен", "Exact domain")), ("domain_keyword", crate::tr!("Слово в домене", "Word in the domain")), ("domain_regex", crate::tr!("Регулярное выражение", "Regular expression")),
+    ("geosite", crate::tr!("GeoSite-категория", "GeoSite category")), ("ip_cidr", crate::tr!("IP / подсеть", "IP / subnet")), ("geoip", crate::tr!("GeoIP-страна", "GeoIP country")), ("process", crate::tr!("Программа (.exe)", "Program (.exe)")),
+] }
+pub fn rule_kind_label(k: &str) -> &str { rule_kinds().into_iter().find(|(key, _)| *key == k).map(|(_, l)| l).unwrap_or(k) }
 pub fn split_values(v: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for item in v.split(|c: char| c == '\n' || c == '\r' || c == ',' || c == ';' || c == ' ') {

@@ -29,16 +29,17 @@ fn civil(z: i64) -> (i64, u32, u32) {
 }
 
 pub fn plural(n: i64, one: &str, few: &str, many: &str) -> String {
+    if crate::i18n::en() { return if n.abs() == 1 { one } else { many }.to_string(); }
     let n = n.abs(); let (d10, d100) = (n % 10, n % 100);
     let w = if d10 == 1 && d100 != 11 { one } else if (2..=4).contains(&d10) && !(12..=14).contains(&d100) { few } else { many };
     w.to_string()
 }
 pub fn bytes(v: i64) -> String {
     let v = v.max(0) as f64;
-    if v < 1024.0 { format!("{} Б", v as i64) }
-    else if v < 1024.0 * 1024.0 { format!("{:.1} КБ", v / 1024.0) }
-    else if v < 1024.0 * 1024.0 * 1024.0 { format!("{:.1} МБ", v / 1048576.0) }
-    else { format!("{:.2} ГБ", v / 1073741824.0) }
+    if v < 1024.0 { crate::trf!("{} Б", "{} B", v as i64) }
+    else if v < 1024.0 * 1024.0 { crate::trf!("{:.1} КБ", "{:.1} KB", v / 1024.0) }
+    else if v < 1024.0 * 1024.0 * 1024.0 { crate::trf!("{:.1} МБ", "{:.1} MB", v / 1048576.0) }
+    else { crate::trf!("{:.2} ГБ", "{:.2} GB", v / 1073741824.0) }
 }
 pub fn duration(secs: i64) -> String { format!("{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60) }
 
@@ -98,7 +99,7 @@ pub fn run_hidden(exe: &std::path::Path, args: &[&str], timeout_secs: u64) -> Re
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         if let Ok(Some(_)) = child.try_wait() { break; }
-        if std::time::Instant::now() > deadline { let _ = child.kill(); return Err("Проверка конфигурации не завершилась вовремя.".into()); }
+        if std::time::Instant::now() > deadline { let _ = child.kill(); return Err(crate::tr!("Проверка конфигурации не завершилась вовремя.", "The configuration check did not finish in time.").into()); }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
@@ -150,8 +151,8 @@ pub fn run_hidden_stdin(exe: &std::path::Path, args: &[&str], input: &[u8], time
     let o2 = out.clone();
     let handle = std::thread::spawn(move || { let r = child.wait_with_output(); *o2.lock().unwrap() = Some(r); });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    while !handle.is_finished() { if std::time::Instant::now() > deadline { return Err("Проверка конфигурации не завершилась вовремя.".into()); } std::thread::sleep(std::time::Duration::from_millis(30)); }
-    let result = out.lock().unwrap().take().ok_or("Нет ответа ядра")?.map_err(|e| e.to_string())?;
+    while !handle.is_finished() { if std::time::Instant::now() > deadline { return Err(crate::tr!("Проверка конфигурации не завершилась вовремя.", "The configuration check did not finish in time.").into()); } std::thread::sleep(std::time::Duration::from_millis(30)); }
+    let result = out.lock().unwrap().take().ok_or(crate::tr!("Нет ответа ядра", "No answer from the core"))?.map_err(|e| e.to_string())?;
     let text = format!("{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
     if result.status.success() { Ok(text) } else { Err(text) }
 }

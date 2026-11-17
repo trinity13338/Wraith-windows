@@ -65,9 +65,9 @@ pub mod tray {
 
     pub fn create() -> Option<TrayIcon> {
         let menu = Menu::new();
-        let open = MenuItem::with_id("open", "Открыть Wraith", true, None);
-        let toggle = MenuItem::with_id("toggle", "Подключить / отключить", true, None);
-        let quit = MenuItem::with_id("quit", "Выход", true, None);
+        let open = MenuItem::with_id("open", crate::tr!("Открыть Wraith", "Open Wraith"), true, None);
+        let toggle = MenuItem::with_id("toggle", crate::tr!("Подключить / отключить", "Connect / disconnect"), true, None);
+        let quit = MenuItem::with_id("quit", crate::tr!("Выход", "Quit"), true, None);
         menu.append_items(&[&open, &toggle, &PredefinedMenuItem::separator(), &quit]).ok()?;
         let icon = tray_icon::Icon::from_rgba(super::icon::rgba(32), 32, 32).ok()?;
         let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Wraith").with_icon(icon).with_menu_on_left_click(false).build().ok()?;

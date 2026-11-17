@@ -88,8 +88,8 @@ macro_rules! obj {
 pub fn parse_obj(text: &str) -> Result<Obj, String> {
     match serde_json::from_str::<Value>(text) {
         Ok(Value::Object(o)) => Ok(o),
-        Ok(_) => Err("Ожидается JSON-объект.".into()),
-        Err(e) => Err(format!("Некорректный JSON: {e}")),
+        Ok(_) => Err(crate::tr!("Ожидается JSON-объект.", "A JSON object is expected.").into()),
+        Err(e) => Err(crate::trf!("Некорректный JSON: {e}", "Invalid JSON: {e}")),
     }
 }
 
@@ -98,9 +98,9 @@ pub fn base64_text(s: &str) -> Result<String, String> {
     use base64::Engine;
     let mut v: String = s.chars().filter(|c| !c.is_whitespace()).map(|c| match c { '-' => '+', '_' => '/', c => c }).collect();
     if let Some(cut) = v.find('=') { v.truncate(cut); }
-    if v.is_empty() { return Err("Пустые данные Base64.".into()); }
-    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(v.as_bytes()).map_err(|_| "Некорректный Base64.".to_string())?;
-    String::from_utf8(bytes).map_err(|_| "Base64 не содержит текст.".to_string())
+    if v.is_empty() { return Err(crate::tr!("Пустые данные Base64.", "Empty Base64 data.").into()); }
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(v.as_bytes()).map_err(|_| crate::tr!("Некорректный Base64.", "Invalid Base64.").to_string())?;
+    String::from_utf8(bytes).map_err(|_| crate::tr!("Base64 не содержит текст.", "Base64 does not contain text.").to_string())
 }
 
 /// Text a person could have written, not binary noise decoded from base64.

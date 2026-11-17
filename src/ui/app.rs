@@ -4,7 +4,7 @@ use super::theme::{self, icon, semibold, Palette};
 use super::widgets::{self as w, Kind};
 use crate::core::{self, State};
 use crate::json::{Get, Obj};
-use crate::model::{Profile, Subscription, RULE_KINDS};
+use crate::model::{Profile, Subscription};
 use crate::store;
 use crate::subs::updater::{self, Release};
 use crate::util;
@@ -62,7 +62,7 @@ impl App {
         let page = match std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from)).as_deref() { Some("settings") => Page::Settings, Some("logs") => Page::Logs, _ => Page::Home };
         let app = App { pal, theme_key, page, search: String::new(), modal: None, shared: Arc::new(Mutex::new(Shared::default())), ping_cancel: None, profiles: vec![], subs: vec![], revision: u64::MAX, log_cache: (u64::MAX, String::new()), start_hidden, frames: 0, _tray: tray };
         let (update_on_open, check_updates, connect_on_start) = { let s = store::get(); (s.b("updateOnOpen"), s.b("checkUpdates"), s.b("connectOnStart")) };
-        if update_on_open { app.background("Обновляем подписки…", || { crate::subs::update_all(true); Ok("Подписки обновлены".into()) }); }
+        if update_on_open { app.background(crate::tr!("Обновляем подписки…", "Updating subscriptions…"), || { crate::subs::update_all(true); Ok(crate::tr!("Подписки обновлены", "Subscriptions updated").into()) }); }
         if check_updates { let shared = app.shared.clone(); std::thread::spawn(move || if let Ok(r) = updater::check() { if r.available { shared.lock().unwrap().release = Some(r); super::repaint(); } }); }
         if connect || connect_on_start { let selected = store::get().selected().cloned(); if let Some(p) = selected { core::connect(p); } }
         app
@@ -100,11 +100,7 @@ impl App {
         }
     }
     fn connect_selected(&mut self) {
-        let Some(p) = store::get().selected().cloned() else { self.toast("Сначала добавьте и выберите сервер"); return };
-        let preferred = store::get().settings.s_or("core", "xray");
-        if (preferred == "singbox") != crate::importer::for_engine(&p, &preferred).is_singbox() {
-            self.toast(if preferred == "singbox" { "Этот сервер работает только на Xray — sing-box такую конфигурацию не поддерживает" } else { "Этот сервер работает только на sing-box" });
-        }
+        let Some(p) = store::get().selected().cloned() else { self.toast(crate::tr!("Сначала добавьте и выберите сервер", "Add and select a server first")); return };
         if crate::model::uses_tun(&store::get().settings) && !util::is_admin() { self.modal = Some(Modal::Admin); return; }
         core::connect(p);
     }
@@ -137,7 +133,7 @@ impl App {
         let payload = match crate::importer::unwrap(&text) { Ok(p) => p, Err(e) => { self.toast(e); return } };
         if crate::importer::is_subscription_url(&payload) {
             self.modal = None;
-            self.background("Загружаем подписку…", move || { let sub = crate::subs::create(&payload)?; Ok(format!("Подписка «{}» добавлена", sub.name)) });
+            self.background(crate::tr!("Загружаем подписку…", "Loading the subscription…"), move || { let sub = crate::subs::create(&payload)?; Ok(crate::trf!("Подписка «{}» добавлена", "Subscription «{}» added", sub.name)) });
             return;
         }
         match crate::importer::parse(&payload) {
@@ -145,8 +141,8 @@ impl App {
                 let n = result.profiles.len();
                 store::update(|s| { let first = result.profiles[0].id.clone(); s.profiles.extend(result.profiles); if s.selected().is_none() { s.selected = first; } });
                 self.modal = None;
-                let skipped = if result.skipped.is_empty() { String::new() } else { format!(", пропущено {}", result.skipped.len()) };
-                self.toast(format!("Добавлено {n} {}{skipped}", util::plural(n as i64, "сервер", "сервера", "серверов")));
+                let skipped = if result.skipped.is_empty() { String::new() } else { crate::trf!(", пропущено {}", ", skipped {}", result.skipped.len()) };
+                self.toast(crate::trf!("Добавлено {n} {}{skipped}", "Added {n} {}{skipped}", util::plural(n as i64, crate::tr!("сервер", "server"), crate::tr!("сервера", "servers"), crate::tr!("серверов", "servers"))));
             }
             Err(e) => self.toast(e),
         }
@@ -154,12 +150,11 @@ impl App {
 
     fn show_config(&mut self, p: &Profile) {
         let state = store::get().clone();
-        let p = &crate::importer::for_engine(p, &state.settings.s_or("core", "xray"));
         let dns = crate::routing::system_resolvers();
-        let result = if p.is_singbox() { crate::singbox::build(&state, p, &dns, 0, "••••") } else { crate::xray::build(&state, p, &dns, 0).map(|b| b.config) };
+        let result = crate::xray::build(&state, p, &dns, 0).map(|b| b.config);
         self.modal = Some(match result {
-            Ok(c) => Modal::Info { title: format!("Конфигурация · {}", if p.is_singbox() { "sing-box" } else { "Xray" }), text: serde_json::to_string_pretty(&c).unwrap_or_default(), copy: true },
-            Err(e) => Modal::Info { title: "Конфигурация не собрана".into(), text: e, copy: false },
+            Ok(c) => Modal::Info { title: crate::tr!("Конфигурация Xray", "Xray configuration").into(), text: serde_json::to_string_pretty(&c).unwrap_or_default(), copy: true },
+            Err(e) => Modal::Info { title: crate::tr!("Конфигурация не собрана", "The configuration could not be built").into(), text: e, copy: false },
         });
     }
 
@@ -178,7 +173,7 @@ impl App {
             ui.painter().rect_filled(rect, CornerRadius::same(14), p.primary_container);
             ui.painter().text(rect.center(), Align2::CENTER_CENTER, "W", FontId::new(22.0, semibold()), p.on_primary_container);
             ui.add_space(26.0);
-            for (page, glyph, label) in [(Page::Home, icon::HOME, "Главная"), (Page::Settings, icon::SETTINGS, "Настройки"), (Page::Logs, icon::JOURNAL, "Журнал")] {
+            for (page, glyph, label) in [(Page::Home, icon::HOME, crate::tr!("Главная", "Home")), (Page::Settings, icon::SETTINGS, crate::tr!("Настройки", "Settings")), (Page::Logs, icon::JOURNAL, crate::tr!("Журнал", "Log"))] {
                 let selected = self.page == page;
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(80.0, 62.0), Sense::click());
                 let pill = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 18.0), Vec2::new(56.0, 32.0));
@@ -215,8 +210,8 @@ impl App {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(w::icon_text(icon::UPDATE, 18.0, p.text));
-                    ui.label(RichText::new(format!("Доступна версия {}", r.version)).font(FontId::new(14.0, semibold())));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| if w::button(ui, &p, Kind::Text, None, "Обновить").clicked() { self.modal = Some(Modal::Update { release: r.clone() }); });
+                    ui.label(RichText::new(crate::trf!("Доступна версия {}", "Version {} is available", r.version)).font(FontId::new(14.0, semibold())));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| if w::button(ui, &p, Kind::Text, None, crate::tr!("Обновить", "Update")).clicked() { self.modal = Some(Modal::Update { release: r.clone() }); });
                 });
             });
             ui.add_space(12.0);
@@ -227,27 +222,27 @@ impl App {
                 ui.add_space(6.0);
                 if self.orb(ui, &st).clicked() { self.toggle(); }
                 ui.add_space(14.0);
-                let (title, color) = match st.state { State::Connected => ("Подключено", p.primary), State::Connecting => ("Подключение…", p.text), State::Stopping => ("Отключение…", p.text), State::Off => ("Не подключено", p.text) };
+                let (title, color) = match st.state { State::Connected => (crate::tr!("Подключено", "Connected"), p.primary), State::Connecting => (crate::tr!("Подключение…", "Connecting…"), p.text), State::Stopping => (crate::tr!("Отключение…", "Disconnecting…"), p.text), State::Off => (crate::tr!("Не подключено", "Not connected"), p.text) };
                 ui.label(RichText::new(title).font(FontId::new(24.0, semibold())).color(color));
                 let selected = store::get().selected().cloned();
                 match (&st.state, &selected) {
                     (State::Connected | State::Connecting, _) if !st.profile_name.is_empty() => { ui.label(RichText::new(w::display_name(&st.profile_name)).color(p.muted)); }
                     (_, Some(s)) => { ui.label(RichText::new(w::display_name(&s.name)).color(p.muted)); }
-                    _ => { ui.label(RichText::new("Добавьте сервер, чтобы подключиться").color(p.muted)); }
+                    _ => { ui.label(RichText::new(crate::tr!("Добавьте сервер, чтобы подключиться", "Add a server to connect")).color(p.muted)); }
                 }
                 if st.state == State::Connected {
                     ui.add_space(10.0);
                     let secs = st.since.map(|s| s.elapsed().as_secs() as i64).unwrap_or(0);
                     ui.horizontal(|ui| {
                         let total = 3.0 * 8.0 + 3.0 * 96.0; ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
-                        for (glyph, text) in [(icon::CLOCK, util::duration(secs)), (icon::DOWNLOAD, format!("{}/с", util::bytes(st.rx_rate))), (icon::UPLOAD, format!("{}/с", util::bytes(st.tx_rate)))] {
+                        for (glyph, text) in [(icon::CLOCK, util::duration(secs)), (icon::DOWNLOAD, crate::trf!("{}/с", "{}/s", util::bytes(st.rx_rate))), (icon::UPLOAD, crate::trf!("{}/с", "{}/s", util::bytes(st.tx_rate)))] {
                             Frame::new().fill(p.container).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(8, 5)).show(ui, |ui| {
                                 ui.set_min_width(80.0);
                                 ui.horizontal(|ui| { ui.label(w::icon_text(glyph, 12.0, p.muted)); ui.label(RichText::new(text).size(12.5).color(p.text)); });
                             });
                         }
                     });
-                    ui.label(RichText::new(format!("{} · {} · всего ↓ {} ↑ {}", st.engine, match store::get().s("tunnelMode").as_str() { "both" => "TUN + прокси", "tun" => "TUN", _ => "системный прокси" }, util::bytes(st.rx), util::bytes(st.tx))).size(12.0).color(p.muted));
+                    ui.label(RichText::new(crate::trf!("{} · {} · всего ↓ {} ↑ {}", "{} · {} · total ↓ {} ↑ {}", st.engine, match store::get().s("tunnelMode").as_str() { "both" => crate::tr!("TUN + прокси", "TUN + proxy"), "tun" => "TUN", _ => crate::tr!("системный прокси", "system proxy") }, util::bytes(st.rx), util::bytes(st.tx))).size(12.0).color(p.muted));
                 }
                 if st.state == State::Off && !st.error.is_empty() {
                     ui.add_space(10.0);
@@ -261,21 +256,14 @@ impl App {
             // System proxy and TUN are independent; at least one stays on.
             let mode = store::get().s("tunnelMode");
             let mut flags = [mode != "tun", mode == "tun" || mode == "both"];
-            ui.label(RichText::new("Подключение").size(12.5).color(p.muted));
-            if w::toggles(ui, &p, &mut flags, &["Системный прокси", "TUN"], ui.available_width()) {
-                if !flags[0] && !flags[1] { self.toast("Нужен хотя бы один режим"); }
+            ui.label(RichText::new(crate::tr!("Подключение", "Connection")).size(12.5).color(p.muted));
+            if w::toggles(ui, &p, &mut flags, &[crate::tr!("Системный прокси", "System proxy"), "TUN"], ui.available_width()) {
+                if !flags[0] && !flags[1] { self.toast(crate::tr!("Нужен хотя бы один режим", "At least one mode is needed")); }
                 else {
                     let next = match flags { [true, true] => "both", [true, false] => "proxy", _ => "tun" };
                     store::update(|s| s.set("tunnelMode", next.into()));
                     if st.state == State::Connected { self.connect_selected(); }
                 }
-            }
-            ui.add_space(10.0);
-            let mut engine = store::get().settings.s_or("core", "xray");
-            ui.label(RichText::new("Ядро").size(12.5).color(p.muted));
-            if w::segmented(ui, &p, &mut engine, &[("xray", "Xray"), ("singbox", "sing-box")], ui.available_width()) {
-                store::update(|s| s.set("core", engine.clone().into()));
-                if st.state == State::Connected { self.connect_selected(); }
             }
         });
     }
@@ -300,21 +288,21 @@ impl App {
         let fill = if on { p.primary } else { p.highest };
         painter.circle_filled(c, 62.0 + hover * 2.0, fill);
         painter.text(c, Align2::CENTER_CENTER, icon::POWER, FontId::new(44.0, theme::icons()), if on { p.on_primary } else { p.text });
-        response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if on { "Отключить" } else { "Подключить" })
+        response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if on { crate::tr!("Отключить", "Disconnect") } else { crate::tr!("Подключить", "Connect") })
     }
 
     fn servers(&mut self, ui: &mut Ui) {
         let p = self.pal;
         let pinging = !self.shared.lock().unwrap().pinging.is_empty();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Серверы").font(FontId::new(24.0, semibold())));
+            ui.label(RichText::new(crate::tr!("Серверы", "Servers")).font(FontId::new(24.0, semibold())));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(ui, &p, Kind::Filled, Some(icon::ADD), "Добавить").clicked() { self.modal = Some(Modal::Add { text: String::new() }); }
-                if !self.subs.is_empty() && w::icon_button(ui, &p, icon::REFRESH, "Обновить подписки", false).clicked() {
-                    self.background("Обновляем подписки…", || { crate::subs::update_all(false); Ok("Подписки обновлены".into()) });
+                if w::button(ui, &p, Kind::Filled, Some(icon::ADD), crate::tr!("Добавить", "Add")).clicked() { self.modal = Some(Modal::Add { text: String::new() }); }
+                if !self.subs.is_empty() && w::icon_button(ui, &p, icon::REFRESH, crate::tr!("Обновить подписки", "Update subscriptions"), false).clicked() {
+                    self.background(crate::tr!("Обновляем подписки…", "Updating subscriptions…"), || { crate::subs::update_all(false); Ok(crate::tr!("Подписки обновлены", "Subscriptions updated").into()) });
                 }
-                if w::icon_button(ui, &p, if pinging { icon::CLOSE } else { icon::PULSE }, if pinging { "Остановить проверку" } else { "Проверить задержку" }, pinging).clicked() { self.ping(None); }
-                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Поиск").desired_width((ui.available_width() - 8.0).clamp(120.0, 260.0)).margin(Margin::symmetric(12, 9)));
+                if w::icon_button(ui, &p, if pinging { icon::CLOSE } else { icon::PULSE }, if pinging { crate::tr!("Остановить проверку", "Stop checking") } else { crate::tr!("Проверить задержку", "Check latency") }, pinging).clicked() { self.ping(None); }
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(crate::tr!("Поиск", "Search")).desired_width((ui.available_width() - 8.0).clamp(120.0, 260.0)).margin(Margin::symmetric(12, 9)));
             });
         });
         ui.add_space(8.0);
@@ -353,13 +341,12 @@ impl App {
                 ui.add_space(30.0);
                 ui.label(w::icon_text(icon::SERVER, 42.0, p.primary));
                 ui.add_space(10.0);
-                ui.label(RichText::new("Пока нет серверов").font(FontId::new(18.0, semibold())));
-                ui.label(RichText::new("Вставьте ссылку подписки, vless:// / vmess:// / trojan:// / ss:// / hy2:// или JSON-конфигурацию Xray и sing-box.").color(p.muted));
+                ui.label(RichText::new(crate::tr!("Пока нет серверов", "No servers yet")).font(FontId::new(18.0, semibold())));
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     ui.add_space((ui.available_width() - 330.0).max(0.0) / 2.0);
-                    if w::button(ui, &p, Kind::Filled, Some(icon::PASTE), "Вставить из буфера").clicked() { if let Some(t) = util::clipboard_text() { self.add(t); } else { self.toast("Буфер обмена пуст"); } }
-                    if w::button(ui, &p, Kind::Tonal, Some(icon::ADD), "Добавить").clicked() { self.modal = Some(Modal::Add { text: String::new() }); }
+                    if w::button(ui, &p, Kind::Filled, Some(icon::PASTE), crate::tr!("Вставить из буфера", "Paste from clipboard")).clicked() { if let Some(t) = util::clipboard_text() { self.add(t); } else { self.toast(crate::tr!("Буфер обмена пуст", "The clipboard is empty")); } }
+                    if w::button(ui, &p, Kind::Tonal, Some(icon::ADD), crate::tr!("Добавить", "Add")).clicked() { self.modal = Some(Modal::Add { text: String::new() }); }
                 });
                 ui.add_space(30.0);
             });
@@ -370,7 +357,7 @@ impl App {
         let p = self.pal;
         let Some(sub) = sub else {
             ui.add_space(6.0);
-            ui.label(RichText::new(format!("Мои серверы · {count}")).font(FontId::new(13.5, semibold())).color(p.primary));
+            ui.label(RichText::new(crate::trf!("Мои серверы · {count}", "My servers · {count}")).font(FontId::new(13.5, semibold())).color(p.primary));
             ui.add_space(4.0); return;
         };
         Frame::new().fill(p.low).corner_radius(CornerRadius::same(18)).inner_margin(Margin { left: 14, right: 8, top: 10, bottom: 10 }).show(ui, |ui| {
@@ -384,10 +371,10 @@ impl App {
                     ui.set_width(column);
                     ui.label(RichText::new(&sub.name).font(FontId::new(15.0, semibold())));
                     let (used, total, expire) = sub.usage();
-                    let mut info = vec![format!("{count} {}", util::plural(count as i64, "сервер", "сервера", "серверов"))];
-                    if total > 0 { info.push(format!("{} из {}", util::bytes(used), util::bytes(total))); } else if used > 0 { info.push(util::bytes(used)); }
-                    if expire > 0 { let days = (expire - util::unix_now()) / 86400; info.push(if days < 0 { "срок истёк".into() } else { format!("до {} · {} дн.", util::date_of(expire), days) }); }
-                    if sub.updated > 0 { let mins = (util::unix_now() - sub.updated) / 60; info.push(if mins < 1 { "обновлено сейчас".into() } else if mins < 60 { format!("обновлено {mins} мин назад") } else if mins < 1440 { format!("обновлено {} ч назад", mins / 60) } else { format!("обновлено {} дн. назад", mins / 1440) }); }
+                    let mut info = vec![format!("{count} {}", util::plural(count as i64, crate::tr!("сервер", "server"), crate::tr!("сервера", "servers"), crate::tr!("серверов", "servers")))];
+                    if total > 0 { info.push(crate::trf!("{} из {}", "{} of {}", util::bytes(used), util::bytes(total))); } else if used > 0 { info.push(util::bytes(used)); }
+                    if expire > 0 { let days = (expire - util::unix_now()) / 86400; info.push(if days < 0 { crate::tr!("срок истёк", "expired").into() } else { crate::trf!("до {} · {} дн.", "until {} · {} d", util::date_of(expire), days) }); }
+                    if sub.updated > 0 { let mins = (util::unix_now() - sub.updated) / 60; info.push(if mins < 1 { crate::tr!("обновлено сейчас", "updated just now").into() } else if mins < 60 { crate::trf!("обновлено {mins} мин назад", "updated {mins} min ago") } else if mins < 1440 { crate::trf!("обновлено {} ч назад", "updated {} h ago", mins / 60) } else { crate::trf!("обновлено {} дн. назад", "updated {} d ago", mins / 1440) }); }
                     ui.label(RichText::new(info.join(" · ")).size(12.5).color(p.muted));
                     if total > 0 {
                         ui.add_space(2.0);
@@ -401,25 +388,25 @@ impl App {
                     if !sub.error.is_empty() { ui.label(RichText::new(&sub.error).size(12.5).color(p.error)); }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let menu = w::icon_button(ui, &p, icon::MORE, "Подписка", false);
+                    let menu = w::icon_button(ui, &p, icon::MORE, crate::tr!("Подписка", "Subscription"), false);
                     let id = sub.id.clone(); let s2 = sub.clone();
                     let busy = self.shared.lock().unwrap().busy.is_some();
                     let pinging = { let s = self.shared.lock().unwrap(); self.profiles.iter().any(|x| x.group == id && s.pinging.contains(&x.id)) };
-                    if w::icon_button(ui, &p, if pinging { icon::CLOSE } else { icon::PULSE }, if pinging { "Остановить проверку" } else { "Проверить задержку серверов подписки" }, pinging).clicked() {
+                    if w::icon_button(ui, &p, if pinging { icon::CLOSE } else { icon::PULSE }, if pinging { crate::tr!("Остановить проверку", "Stop checking") } else { crate::tr!("Проверить задержку серверов подписки", "Check the subscription's servers") }, pinging).clicked() {
                         if pinging { self.ping(None); } else { let ids = self.profiles.iter().filter(|x| x.group == id).map(|x| x.id.clone()).collect(); self.ping(Some(ids)); }
                     }
-                    if w::icon_button(ui, &p, icon::REFRESH, "Обновить подписку", false).clicked() && !busy {
-                        let s3 = s2.clone(); self.background("Обновляем подписку…", move || { crate::subs::update(s3)?; Ok("Подписка обновлена".into()) });
+                    if w::icon_button(ui, &p, icon::REFRESH, crate::tr!("Обновить подписку", "Update subscription"), false).clicked() && !busy {
+                        let s3 = s2.clone(); self.background(crate::tr!("Обновляем подписку…", "Updating the subscription…"), move || { crate::subs::update(s3)?; Ok(crate::tr!("Подписка обновлена", "Subscription updated").into()) });
                     }
                     egui::Popup::menu(&menu).show(|ui| {
                         ui.set_min_width(220.0);
-                        if ui.button("Обновить").clicked() { let s3 = s2.clone(); self.background("Обновляем подписку…", move || { crate::subs::update(s3)?; Ok("Подписка обновлена".into()) }); }
-                        if ui.button("Проверить задержку").clicked() { let ids = self.profiles.iter().filter(|p| p.group == id).map(|p| p.id.clone()).collect(); self.ping(Some(ids)); }
-                        if ui.button("Изменить").clicked() { self.modal = Some(Modal::Sub { sub: s2.clone() }); }
-                        if ui.button("Скопировать ссылку").clicked() { ui.ctx().copy_text(s2.url.clone()); self.toast("Ссылка скопирована"); }
-                        if !s2.support_url.is_empty() && ui.button("Поддержка").clicked() { util::open_url(&s2.support_url); }
-                        if !s2.web_page_url.is_empty() && ui.button("Сайт провайдера").clicked() { util::open_url(&s2.web_page_url); }
-                        if ui.button(RichText::new("Удалить").color(p.error)).clicked() { self.modal = Some(Modal::Confirm { title: "Удалить подписку?".into(), text: format!("«{}» и все её серверы будут удалены.", s2.name), action: Confirmed::DeleteSubscription(id.clone()) }); }
+                        if ui.button(crate::tr!("Обновить", "Update")).clicked() { let s3 = s2.clone(); self.background(crate::tr!("Обновляем подписку…", "Updating the subscription…"), move || { crate::subs::update(s3)?; Ok(crate::tr!("Подписка обновлена", "Subscription updated").into()) }); }
+                        if ui.button(crate::tr!("Проверить задержку", "Check latency")).clicked() { let ids = self.profiles.iter().filter(|p| p.group == id).map(|p| p.id.clone()).collect(); self.ping(Some(ids)); }
+                        if ui.button(crate::tr!("Изменить", "Edit")).clicked() { self.modal = Some(Modal::Sub { sub: s2.clone() }); }
+                        if ui.button(crate::tr!("Скопировать ссылку", "Copy link")).clicked() { ui.ctx().copy_text(s2.url.clone()); self.toast(crate::tr!("Ссылка скопирована", "Link copied")); }
+                        if !s2.support_url.is_empty() && ui.button(crate::tr!("Поддержка", "Support")).clicked() { util::open_url(&s2.support_url); }
+                        if !s2.web_page_url.is_empty() && ui.button(crate::tr!("Сайт провайдера", "Provider website")).clicked() { util::open_url(&s2.web_page_url); }
+                        if ui.button(RichText::new(crate::tr!("Удалить", "Delete")).color(p.error)).clicked() { self.modal = Some(Modal::Confirm { title: crate::tr!("Удалить подписку?", "Delete the subscription?").into(), text: crate::trf!("«{}» и все её серверы будут удалены.", "«{}» and all its servers will be deleted.", s2.name), action: Confirmed::DeleteSubscription(id.clone()) }); }
                     });
                 });
             });
@@ -438,7 +425,7 @@ impl App {
         ui.painter().circle_filled(badge.center(), 20.0, if live { p.primary } else if selected { p.primary_container } else { p.highest });
         ui.painter().text(badge.center(), Align2::CENTER_CENTER, w::badge_text(&pr.name), FontId::new(13.0, semibold()), if live { p.on_primary } else if selected { p.on_primary_container } else { p.text });
         // Latency chip on the right.
-        let (chip_text, chip_color) = if pinging { ("…".to_string(), p.muted) } else if pr.latency > 0 { (format!("{} мс", pr.latency), if pr.latency < 300 { p.good } else if pr.latency < 800 { p.warn } else { p.error }) } else if !pr.ping_error.is_empty() { (crate::pinger::short_error(&pr.ping_error).chars().take(22).collect(), p.error) } else { (String::new(), p.muted) };
+        let (chip_text, chip_color) = if pinging { ("…".to_string(), p.muted) } else if pr.latency > 0 { (crate::trf!("{} мс", "{} ms", pr.latency), if pr.latency < 300 { p.good } else if pr.latency < 800 { p.warn } else { p.error }) } else if !pr.ping_error.is_empty() { (crate::pinger::short_error(&pr.ping_error).chars().take(22).collect(), p.error) } else { (String::new(), p.muted) };
         let mut right = rect.right() - 14.0;
         if !chip_text.is_empty() {
             let g = ui.painter().layout_no_wrap(chip_text, FontId::new(12.5, semibold()), chip_color);
@@ -451,7 +438,7 @@ impl App {
         let text_left = badge.right() + 14.0; let max_w = (right - text_left - 8.0).max(40.0);
         let name = ui.painter().layout(w::display_name(&pr.name), FontId::new(14.5, semibold()), if selected { p.on_secondary_container } else { p.text }, max_w);
         let name = truncate(ui, name, &w::display_name(&pr.name), FontId::new(14.5, semibold()), if selected { p.on_secondary_container } else { p.text }, max_w);
-        let sub = truncate(ui, ui.painter().layout_no_wrap(String::new(), FontId::new(12.5, egui::FontFamily::Proportional), p.muted), &format!("{}{}", if live { "Подключено · " } else { "" }, pr.summary()), FontId::new(12.5, egui::FontFamily::Proportional), if live { p.primary } else { p.muted }, max_w);
+        let sub = truncate(ui, ui.painter().layout_no_wrap(String::new(), FontId::new(12.5, egui::FontFamily::Proportional), p.muted), &format!("{}{}", if live { crate::tr!("Подключено · ", "Connected · ") } else { "" }, pr.summary()), FontId::new(12.5, egui::FontFamily::Proportional), if live { p.primary } else { p.muted }, max_w);
         ui.painter().galley(egui::pos2(text_left, rect.center().y - 19.0), name, p.text);
         ui.painter().galley(egui::pos2(text_left, rect.center().y + 2.0), sub, p.muted);
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -460,13 +447,13 @@ impl App {
         let id = pr.id.clone(); let pr2 = pr.clone();
         response.context_menu(|ui| {
             ui.set_min_width(230.0);
-            if ui.button("Подключиться").clicked() { self.select(&id, true); ui.close(); }
-            if ui.button("Проверить задержку").clicked() { self.ping(Some(vec![id.clone()])); ui.close(); }
-            if ui.button(if pr2.favorite { "Убрать из избранного" } else { "В избранное" }).clicked() { let i = id.clone(); store::update(|s| if let Some(x) = s.profiles.iter_mut().find(|x| x.id == i) { x.favorite = !x.favorite; }); ui.close(); }
-            if ui.button("Скопировать ссылку").clicked() { ui.ctx().copy_text(pr2.source.clone()); self.toast("Скопировано"); ui.close(); }
-            if ui.button("Показать конфигурацию").clicked() { self.show_config(&pr2); ui.close(); }
-            if !pr2.ping_error.is_empty() && ui.button("Ошибка проверки").clicked() { self.modal = Some(Modal::Info { title: "Ошибка проверки".into(), text: pr2.ping_error.clone(), copy: true }); ui.close(); }
-            if ui.button(RichText::new("Удалить").color(p.error)).clicked() { self.modal = Some(Modal::Confirm { title: "Удалить сервер?".into(), text: format!("«{}» будет удалён.", w::display_name(&pr2.name)), action: Confirmed::DeleteProfile(id.clone()) }); ui.close(); }
+            if ui.button(crate::tr!("Подключиться", "Connect")).clicked() { self.select(&id, true); ui.close(); }
+            if ui.button(crate::tr!("Проверить задержку", "Check latency")).clicked() { self.ping(Some(vec![id.clone()])); ui.close(); }
+            if ui.button(if pr2.favorite { crate::tr!("Убрать из избранного", "Remove from favourites") } else { crate::tr!("В избранное", "Add to favourites") }).clicked() { let i = id.clone(); store::update(|s| if let Some(x) = s.profiles.iter_mut().find(|x| x.id == i) { x.favorite = !x.favorite; }); ui.close(); }
+            if ui.button(crate::tr!("Скопировать ссылку", "Copy link")).clicked() { ui.ctx().copy_text(pr2.source.clone()); self.toast(crate::tr!("Скопировано", "Copied")); ui.close(); }
+            if ui.button(crate::tr!("Показать конфигурацию", "Show configuration")).clicked() { self.show_config(&pr2); ui.close(); }
+            if !pr2.ping_error.is_empty() && ui.button(crate::tr!("Ошибка проверки", "Check error")).clicked() { self.modal = Some(Modal::Info { title: crate::tr!("Ошибка проверки", "Check error").into(), text: pr2.ping_error.clone(), copy: true }); ui.close(); }
+            if ui.button(RichText::new(crate::tr!("Удалить", "Delete")).color(p.error)).clicked() { self.modal = Some(Modal::Confirm { title: crate::tr!("Удалить сервер?", "Delete the server?").into(), text: crate::trf!("«{}» будет удалён.", "«{}» will be deleted.", w::display_name(&pr2.name)), action: Confirmed::DeleteProfile(id.clone()) }); ui.close(); }
         });
         ui.add_space(2.0);
     }
@@ -479,86 +466,86 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.set_max_width(760.0);
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    ui.label(RichText::new("Настройки").font(FontId::new(26.0, semibold())));
-                    w::section_title(ui, &p, "Подключение");
+                    ui.label(RichText::new(crate::tr!("Настройки", "Settings")).font(FontId::new(26.0, semibold())));
+                    w::section_title(ui, &p, crate::tr!("Подключение", "Connection"));
                     w::group(ui, &p, |ui| {
-                        self.pick_row(ui, "Режим", "Системный прокси — без прав администратора; TUN — весь трафик компьютера.", "tunnelMode", &[("both", "Прокси + TUN"), ("proxy", "Системный прокси"), ("tun", "Только TUN")]);
-                        self.pick_row(ui, "Маршрутизация", "", "mode", &[("rules", "По правилам"), ("global", "Всё через VPN"), ("direct", "Всё напрямую")]);
-                        self.bool_row(ui, "Быстрый сервер автоматически", "Для конфигураций с несколькими серверами: Xray сам выбирает самый быстрый живой сервер.", "autoSelect");
-                        self.bool_row(ui, "Не трогать локальную сеть", "Роутер, принтеры и локальные адреса — напрямую.", "bypassLan");
+                        self.pick_row(ui, crate::tr!("Режим", "Mode"), "", "tunnelMode", &[("both", crate::tr!("Прокси + TUN", "Proxy + TUN")), ("proxy", crate::tr!("Системный прокси", "System proxy")), ("tun", crate::tr!("Только TUN", "TUN only"))]);
+                        self.pick_row(ui, crate::tr!("Маршрутизация", "Routing"), "", "mode", &[("rules", crate::tr!("По правилам", "By rules")), ("global", crate::tr!("Всё через VPN", "Everything through VPN")), ("direct", crate::tr!("Всё напрямую", "Everything direct"))]);
+                        self.bool_row(ui, crate::tr!("Быстрый сервер автоматически", "Fastest server automatically"), "", "autoSelect");
+                        self.bool_row(ui, crate::tr!("Не трогать локальную сеть", "Keep the local network direct"), "", "bypassLan");
                         self.ip_row(ui);
-                        self.bool_row(ui, "Определять домены (sniffing)", "Нужно для правил по доменам при подключении по IP.", "sniff");
-                        self.value_row(ui, "MTU туннеля", "Только для TUN. Обычно 1500.", "mtu", true);
+                        self.bool_row(ui, crate::tr!("Определять домены (sniffing)", "Detect domains (sniffing)"), "", "sniff");
+                        self.value_row(ui, crate::tr!("MTU туннеля", "Tunnel MTU"), "", "mtu", true);
                     });
                     w::section_title(ui, &p, "DNS");
                     w::group(ui, &p, |ui| {
-                        self.bool_row(ui, "DNS из JSON", "DNS, который прописал провайдер в конфигурации. Если он не ответит, используется DNS системы.", "dnsFromJson");
-                        self.bool_row(ui, "Свой DNS туннеля", "Ваш DoH/DoT или IP-адрес DNS; запросы идут через VPN. Выключено — DNS системы.", "customDns");
-                        if store::get().b("customDns") { self.value_row(ui, "Адрес DNS", "https://…/dns-query, tls://…, IP-адрес", "tunnelDns", false); }
+                        self.bool_row(ui, crate::tr!("DNS из JSON", "DNS from JSON"), "", "dnsFromJson");
+                        self.bool_row(ui, crate::tr!("Свой DNS туннеля", "Own tunnel DNS"), "", "customDns");
+                        if store::get().b("customDns") { self.value_row(ui, crate::tr!("Адрес DNS", "DNS address"), "", "tunnelDns", false); }
                     });
-                    w::section_title(ui, &p, "Локальный прокси");
+                    w::section_title(ui, &p, crate::tr!("Локальный прокси", "Local proxy"));
                     w::group(ui, &p, |ui| {
-                        self.value_row(ui, "Порт SOCKS5", "127.0.0.1 — для программ, которые не видят системный прокси.", "proxyPort", true);
-                        self.value_row(ui, "Порт HTTP", "Этот порт прописывается в системный прокси Windows.", "httpProxyPort", true);
-                        self.bool_row(ui, "Доступ из локальной сети", "Другие устройства смогут ходить через этот компьютер. Нужен пароль.", "allowLan");
-                        if store::get().b("allowLan") { self.value_row(ui, "Пароль прокси", "Не короче 8 символов. Логин: wraith.", "proxyPassword", false); }
+                        self.value_row(ui, crate::tr!("Порт SOCKS5", "SOCKS5 port"), "", "proxyPort", true);
+                        self.value_row(ui, crate::tr!("Порт HTTP", "HTTP port"), "", "httpProxyPort", true);
+                        self.bool_row(ui, crate::tr!("Доступ из локальной сети", "Access from the local network"), "", "allowLan");
+                        if store::get().b("allowLan") { self.value_row(ui, crate::tr!("Пароль прокси", "Proxy password"), "", "proxyPassword", false); }
                     });
-                    w::section_title(ui, &p, "Обход блокировок");
+                    w::section_title(ui, &p, crate::tr!("Обход блокировок", "Censorship bypass"));
                     w::group(ui, &p, |ui| {
-                        self.bool_row(ui, "Фрагментация TLS", "Делит первый пакет TLS, чтобы DPI не увидел имя сайта.", "fragment");
+                        self.bool_row(ui, crate::tr!("Фрагментация TLS", "TLS fragmentation"), "", "fragment");
                         if store::get().b("fragment") {
-                            self.value_row(ui, "Пакеты", "tlshello или диапазон, например 1-3", "fragmentPackets", false);
-                            self.value_row(ui, "Длина фрагмента", "Байты, например 50-100", "fragmentLength", false);
-                            self.value_row(ui, "Интервал", "Миллисекунды, например 10-20", "fragmentInterval", false);
+                            self.value_row(ui, crate::tr!("Пакеты", "Packets"), "", "fragmentPackets", false);
+                            self.value_row(ui, crate::tr!("Длина фрагмента", "Fragment length"), "", "fragmentLength", false);
+                            self.value_row(ui, crate::tr!("Интервал", "Interval"), "", "fragmentInterval", false);
                         }
-                        self.bool_row(ui, "Шум UDP", "Случайные пакеты перед QUIC/UDP-соединением.", "noise");
+                        self.bool_row(ui, crate::tr!("Шум UDP", "UDP noise"), "", "noise");
                         if store::get().b("noise") {
-                            self.pick_row(ui, "Тип шума", "", "noiseType", &[("rand", "Случайные байты"), ("array", "Байты (hex через запятую)"), ("str", "Строка"), ("hex", "Hex")]);
-                            if store::get().s("noiseType") == "rand" { self.value_row(ui, "Размер", "Байты, например 10-20", "noiseRand", false); } else { self.value_row(ui, "Пакет", "", "noisePacket", false); }
-                            self.value_row(ui, "Задержка", "Миллисекунды, например 10-16", "noiseDelay", false);
+                            self.pick_row(ui, crate::tr!("Тип шума", "Noise type"), "", "noiseType", &[("rand", crate::tr!("Случайные байты", "Random bytes")), ("array", crate::tr!("Байты (hex через запятую)", "Bytes (hex, comma separated)")), ("str", crate::tr!("Строка", "String")), ("hex", "Hex")]);
+                            if store::get().s("noiseType") == "rand" { self.value_row(ui, crate::tr!("Размер", "Size"), "", "noiseRand", false); } else { self.value_row(ui, crate::tr!("Пакет", "Packet"), "", "noisePacket", false); }
+                            self.value_row(ui, crate::tr!("Задержка", "Delay"), "", "noiseDelay", false);
                         }
-                        self.bool_row(ui, "Мультиплексирование", "Несколько соединений в одном. Не применяется к XTLS Vision.", "mux");
-                        if store::get().b("mux") { self.value_row(ui, "Потоков", "1–1024", "muxConnections", true); }
+                        self.bool_row(ui, crate::tr!("Мультиплексирование", "Multiplexing"), "", "mux");
+                        if store::get().b("mux") { self.value_row(ui, crate::tr!("Потоков", "Streams"), "", "muxConnections", true); }
                     });
-                    w::section_title(ui, &p, "Свои правила маршрутизации");
+                    w::section_title(ui, &p, crate::tr!("Свои правила маршрутизации", "Own routing rules"));
                     self.rules(ui);
-                    w::section_title(ui, &p, "Проверка задержки");
+                    w::section_title(ui, &p, crate::tr!("Проверка задержки", "Latency check"));
                     w::group(ui, &p, |ui| {
-                        self.pick_row(ui, "Способ", "Через прокси — честная проверка: запрос идёт через сам сервер.", "pingType", &[("proxyGet", "Через прокси (GET)"), ("proxyHead", "Через прокси (HEAD)"), ("tcp", "TCP-подключение"), ("icmp", "ICMP ping")]);
-                        if store::get().s("pingType").starts_with("proxy") { self.pick_row(ui, "Соединение при проверке", "Keep-alive: второй запрос идёт по уже открытому соединению — показывает задержку без рукопожатия. Два соединения: каждый запрос с нуля.", "pingMode", &[("keepalive", "Keep-alive"), ("double", "Два новых соединения")]); }
-                        self.value_row(ui, "Адрес проверки", "", "pingUrl", false);
-                        self.pick_row(ui, "Тайм-аут", "", "pingTimeout", &[("3000", "3 секунды"), ("5000", "5 секунд"), ("10000", "10 секунд")]);
-                        self.pick_row(ui, "Сортировка серверов", "", "sort", &[("none", "Как у провайдера"), ("ping", "По задержке"), ("name", "По имени")]);
+                        self.pick_row(ui, crate::tr!("Способ", "Method"), "", "pingType", &[("proxyGet", crate::tr!("Через прокси (GET)", "Through the proxy (GET)")), ("proxyHead", crate::tr!("Через прокси (HEAD)", "Through the proxy (HEAD)")), ("tcp", crate::tr!("TCP-подключение", "TCP connection")), ("icmp", "ICMP ping")]);
+                        if store::get().s("pingType").starts_with("proxy") { self.pick_row(ui, crate::tr!("Соединение при проверке", "Connection during the check"), "", "pingMode", &[("keepalive", "Keep-alive"), ("double", crate::tr!("Два новых соединения", "Two new connections"))]); }
+                        self.value_row(ui, crate::tr!("Адрес проверки", "Check address"), "", "pingUrl", false);
+                        self.pick_row(ui, crate::tr!("Тайм-аут", "Timeout"), "", "pingTimeout", &[("3000", crate::tr!("3 секунды", "3 seconds")), ("5000", crate::tr!("5 секунд", "5 seconds")), ("10000", crate::tr!("10 секунд", "10 seconds"))]);
+                        self.pick_row(ui, crate::tr!("Сортировка серверов", "Server order"), "", "sort", &[("none", crate::tr!("Как у провайдера", "As the provider sent them")), ("ping", crate::tr!("По задержке", "By latency")), ("name", crate::tr!("По имени", "By name"))]);
                     });
-                    w::section_title(ui, &p, "Подписки");
+                    w::section_title(ui, &p, crate::tr!("Подписки", "Subscriptions"));
                     w::group(ui, &p, |ui| {
-                        self.bool_row(ui, "Обновлять при запуске", "Только подписки, у которых истёк интервал обновления.", "updateOnOpen");
-                        self.bool_row(ui, "Отправлять HWID", "Некоторые провайдеры ограничивают число устройств по этому идентификатору.", "sendHwid");
-                        self.value_row(ui, "User-Agent", "Пусто — как Happ, чтобы получать полные конфигурации.", "userAgent", false);
+                        self.bool_row(ui, crate::tr!("Обновлять при запуске", "Update on start"), "", "updateOnOpen");
+                        self.bool_row(ui, crate::tr!("Отправлять HWID", "Send HWID"), "", "sendHwid");
+                        self.value_row(ui, "User-Agent", "", "userAgent", false);
                     });
-                    w::section_title(ui, &p, "Приложение");
+                    w::section_title(ui, &p, crate::tr!("Приложение", "App"));
                     w::group(ui, &p, |ui| {
-                        self.pick_row(ui, "Тема", "", "theme", &[("system", "Как в Windows"), ("light", "Светлая"), ("dark", "Тёмная")]);
+                        self.pick_row(ui, crate::tr!("Тема", "Theme"), "", "theme", &[("system", crate::tr!("Как в Windows", "As in Windows")), ("light", crate::tr!("Светлая", "Light")), ("dark", crate::tr!("Тёмная", "Dark"))]);
                         let mut autostart = store::get().b("autostart");
-                        if w::switch_row(ui, &p, "Запускать вместе с Windows", "Wraith стартует свёрнутым в трей.", &mut autostart) { match crate::install::set_autostart(autostart) { Ok(()) => store::update(|s| s.set("autostart", autostart.into())), Err(e) => self.toast(e) } }
-                        self.bool_row(ui, "Подключаться при запуске", "К выбранному серверу.", "connectOnStart");
-                        self.bool_row(ui, "Сворачивать в трей при закрытии", "Крестик прячет окно, VPN продолжает работать.", "minimizeToTray");
-                        self.bool_row(ui, "Проверять обновления", "Только запрос к GitHub Releases, без данных об устройстве.", "checkUpdates");
-                        self.bool_row(ui, "Подробный журнал ядра", "", "debugLogs");
+                        if w::switch_row(ui, &p, crate::tr!("Запускать вместе с Windows", "Start with Windows"), "", &mut autostart) { match crate::install::set_autostart(autostart) { Ok(()) => store::update(|s| s.set("autostart", autostart.into())), Err(e) => self.toast(e) } }
+                        self.bool_row(ui, crate::tr!("Подключаться при запуске", "Connect on start"), "", "connectOnStart");
+                        self.bool_row(ui, crate::tr!("Сворачивать в трей при закрытии", "Minimise to the tray on close"), "", "minimizeToTray");
+                        self.bool_row(ui, crate::tr!("Проверять обновления", "Check for updates"), "", "checkUpdates");
+                        self.bool_row(ui, crate::tr!("Подробный журнал ядра", "Detailed core log"), "", "debugLogs");
                     });
-                    w::section_title(ui, &p, "О программе");
+                    w::section_title(ui, &p, crate::tr!("О программе", "About"));
                     w::group(ui, &p, |ui| {
-                        w::row(ui, &p, &format!("Wraith {}", env!("CARGO_PKG_VERSION")), "Xray + sing-box · открытый код, GPL-3.0", |ui| {
+                        w::row(ui, &p, &format!("Wraith {}", env!("CARGO_PKG_VERSION")), "Xray", |ui| {
                             if w::button(ui, &p, Kind::Text, Some(icon::LINK), "GitHub").clicked() { util::open_url(&format!("https://github.com/{}", updater::REPO)); }
                         });
-                        w::row(ui, &p, "Обновления", "Скачиваются только с GitHub и проверяются по SHA-256.", |ui| {
-                            if w::button(ui, &p, Kind::Tonal, None, "Проверить").clicked() {
+                        w::row(ui, &p, crate::tr!("Обновления", "Updates"), "", |ui| {
+                            if w::button(ui, &p, Kind::Tonal, None, crate::tr!("Проверить", "Check")).clicked() {
                                 let shared = self.shared.clone();
-                                self.background("Проверяем обновления…", move || { let r = updater::check()?; if r.available { let v = r.version.clone(); shared.lock().unwrap().release = Some(r); Ok(format!("Доступна версия {v}")) } else { Ok(format!("Установлена последняя версия {}", env!("CARGO_PKG_VERSION"))) } });
+                                self.background(crate::tr!("Проверяем обновления…", "Checking for updates…"), move || { let r = updater::check()?; if r.available { let v = r.version.clone(); shared.lock().unwrap().release = Some(r); Ok(crate::trf!("Доступна версия {v}", "Version {v} is available")) } else { Ok(crate::trf!("Установлена последняя версия {}", "The latest version {} is installed", env!("CARGO_PKG_VERSION"))) } });
                             }
                         });
-                        w::row(ui, &p, "Папка данных", "Настройки зашифрованы для вашей учётной записи Windows.", |ui| { if w::button(ui, &p, Kind::Text, Some(icon::FOLDER), "Открыть").clicked() { util::open_path(&store::folder()); } });
-                        w::row(ui, &p, "Сбросить настройки", "Серверы и подписки останутся.", |ui| { if w::button(ui, &p, Kind::Danger, None, "Сбросить").clicked() { self.modal = Some(Modal::Confirm { title: "Сбросить настройки?".into(), text: "Все параметры вернутся к значениям по умолчанию.".into(), action: Confirmed::Reset }); } });
+                        w::row(ui, &p, crate::tr!("Папка данных", "Data folder"), "", |ui| { if w::button(ui, &p, Kind::Text, Some(icon::FOLDER), crate::tr!("Открыть", "Open")).clicked() { util::open_path(&store::folder()); } });
+                        w::row(ui, &p, crate::tr!("Сбросить настройки", "Reset settings"), "", |ui| { if w::button(ui, &p, Kind::Danger, None, crate::tr!("Сбросить", "Reset")).clicked() { self.modal = Some(Modal::Confirm { title: crate::tr!("Сбросить настройки?", "Reset the settings?").into(), text: crate::tr!("Все параметры вернутся к значениям по умолчанию.", "All options return to their defaults.").into(), action: Confirmed::Reset }); } });
                     });
                     ui.add_space(30.0);
                 });
@@ -568,7 +555,7 @@ impl App {
 
     fn ip_row(&mut self, ui: &mut Ui) {
         let p = self.pal; let mut v = crate::model::ip_mode(&store::get().settings); let mut changed = false;
-        w::row(ui, &p, "IP-адреса", "Авто — IPv4 и IPv6; IPv4 — если сеть или провайдер без IPv6; IPv6 — только IPv6.", |ui| changed = w::segmented(ui, &p, &mut v, &[("auto", "Авто"), ("v4", "IPv4"), ("v6", "IPv6")], 228.0));
+        w::row(ui, &p, crate::tr!("IP-адреса", "IP addresses"), "", |ui| changed = w::segmented(ui, &p, &mut v, &[("auto", crate::tr!("Авто", "Auto")), ("v4", "IPv4"), ("v6", "IPv6")], 228.0));
         if changed { store::update(|s| s.set("ipMode", v.clone().into())); self.after_change("ipMode"); }
     }
     fn bool_row(&mut self, ui: &mut Ui, title: &str, subtitle: &str, key: &str) {
@@ -594,7 +581,7 @@ impl App {
     }
     fn value_row(&mut self, ui: &mut Ui, title: &str, subtitle: &str, key: &str, numeric: bool) {
         let p = self.pal; let v = store::get().s(key);
-        let shown = if key == "proxyPassword" && !v.is_empty() { "••••••••".to_string() } else if v.is_empty() { "Не задано".into() } else { v.clone() };
+        let shown = if key == "proxyPassword" && !v.is_empty() { "••••••••".to_string() } else if v.is_empty() { crate::tr!("Не задано", "Not set").into() } else { v.clone() };
         let mut open = false;
         w::row(ui, &p, title, subtitle, |ui| {
             let short: String = shown.chars().take(30).collect();
@@ -604,40 +591,39 @@ impl App {
     }
     fn after_change(&mut self, key: &str) {
         let tunnel = ["tunnelMode", "mode", "autoSelect", "bypassLan", "ipMode", "sniff", "mtu", "dnsFromJson", "customDns", "tunnelDns", "proxyPort", "httpProxyPort", "allowLan", "proxyPassword", "fragment", "fragmentPackets", "fragmentLength", "fragmentInterval", "noise", "noiseType", "noisePacket", "noiseRand", "noiseDelay", "mux", "muxConnections", "debugLogs"];
-        if tunnel.contains(&key) && core::status().state == State::Connected { self.toast("Переподключаемся с новыми настройками…"); self.connect_selected(); }
+        if tunnel.contains(&key) && core::status().state == State::Connected { self.toast(crate::tr!("Переподключаемся с новыми настройками…", "Reconnecting with the new settings…")); self.connect_selected(); }
         self.revision = u64::MAX;
     }
 
     fn rules(&mut self, ui: &mut Ui) {
         let p = self.pal; let rules = store::get().rules.clone();
         w::group(ui, &p, |ui| {
-            if rules.is_empty() { w::row(ui, &p, "Правил пока нет", "Например: банки и госуслуги — напрямую, реклама — блокировать, telegram.exe — через VPN.", |_| {}); }
+            if rules.is_empty() { w::row(ui, &p, crate::tr!("Правил пока нет", "No rules yet"), "", |_| {}); }
             for (i, rule) in rules.iter().enumerate() {
-                let action = match rule.s("action").as_str() { "direct" => "Напрямую", "block" => "Блокировать", _ => "Через VPN" };
+                let action = match rule.s("action").as_str() { "direct" => crate::tr!("Напрямую", "Direct"), "block" => crate::tr!("Блокировать", "Block"), _ => crate::tr!("Через VPN", "Through VPN") };
                 let values = crate::model::split_values(&rule.s("value"));
                 let title = if rule.s("name").is_empty() { crate::model::rule_kind_label(&rule.s("kind")).to_string() } else { rule.s("name") };
-                let preview = format!("{} · {}{}", crate::model::rule_kind_label(&rule.s("kind")), values.iter().take(3).cloned().collect::<Vec<_>>().join(", "), if values.len() > 3 { format!(" и ещё {}", values.len() - 3) } else { String::new() });
+                let preview = format!("{} · {}{}", crate::model::rule_kind_label(&rule.s("kind")), values.iter().take(3).cloned().collect::<Vec<_>>().join(", "), if values.len() > 3 { crate::trf!(" и ещё {}", " and {} more", values.len() - 3) } else { String::new() });
                 let mut edit = false; let mut enabled = rule.b("enabled", true);
                 w::row(ui, &p, &title, &preview, |ui| {
                     if w::switch(ui, &p, &mut enabled).changed() { store::update(|s| if let Some(r) = s.rules.get_mut(i) { r.insert("enabled".into(), enabled.into()); }); }
-                    if w::icon_button(ui, &p, icon::EDIT, "Изменить", false).clicked() { edit = true; }
+                    if w::icon_button(ui, &p, icon::EDIT, crate::tr!("Изменить", "Edit"), false).clicked() { edit = true; }
                     w::chip(ui, &p, action, p.secondary_container, p.on_secondary_container);
                 });
                 if edit { self.modal = Some(Modal::Rule { index: Some(i), rule: rule.clone() }); }
             }
-            w::row(ui, &p, "", "", |ui| { if w::button(ui, &p, Kind::Tonal, Some(icon::ADD), "Добавить правило").clicked() { self.modal = Some(Modal::Rule { index: None, rule: crate::obj! {"name" => "", "kind" => "domain_suffix", "value" => "", "action" => "direct", "enabled" => true} }); } });
+            w::row(ui, &p, "", "", |ui| { if w::button(ui, &p, Kind::Tonal, Some(icon::ADD), crate::tr!("Добавить правило", "Add rule")).clicked() { self.modal = Some(Modal::Rule { index: None, rule: crate::obj! {"name" => "", "kind" => "domain_suffix", "value" => "", "action" => "direct", "enabled" => true} }); } });
         });
-        ui.label(RichText::new("Правила по программам (.exe) работают в режиме TUN. Правила провайдера применяются раньше ваших.").size(12.0).color(p.muted));
     }
 
     fn logs(&mut self, ui: &mut Ui) {
         let p = self.pal;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Журнал").font(FontId::new(26.0, semibold())));
+            ui.label(RichText::new(crate::tr!("Журнал", "Log")).font(FontId::new(26.0, semibold())));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(ui, &p, Kind::Text, Some(icon::FOLDER), "Файл").clicked() { util::open_path(&crate::log::path()); }
-                if w::button(ui, &p, Kind::Text, Some(icon::CLEAR), "Очистить").clicked() { crate::log::clear(); }
-                if w::button(ui, &p, Kind::Tonal, Some(icon::COPY), "Копировать").clicked() { ui.ctx().copy_text(crate::log::text()); self.toast("Журнал скопирован"); }
+                if w::button(ui, &p, Kind::Text, Some(icon::FOLDER), crate::tr!("Файл", "File")).clicked() { util::open_path(&crate::log::path()); }
+                if w::button(ui, &p, Kind::Text, Some(icon::CLEAR), crate::tr!("Очистить", "Clear")).clicked() { crate::log::clear(); }
+                if w::button(ui, &p, Kind::Tonal, Some(icon::COPY), crate::tr!("Копировать", "Copy")).clicked() { ui.ctx().copy_text(crate::log::text()); self.toast(crate::tr!("Журнал скопирован", "Log copied")); }
             });
         });
         ui.add_space(8.0);
@@ -662,16 +648,15 @@ impl App {
             ui.set_width(560.0);
             match &mut modal {
                 Modal::Add { text } => {
-                    ui.label(RichText::new("Добавить сервер или подписку").font(FontId::new(20.0, semibold())));
-                    ui.label(RichText::new("Ссылка подписки (https://…), ссылки vless:// vmess:// trojan:// ss:// hy2:// tuic://, JSON Xray или sing-box.").color(p.muted));
+                    ui.label(RichText::new(crate::tr!("Добавить сервер или подписку", "Add a server or subscription")).font(FontId::new(20.0, semibold())));
                     ui.add_space(8.0);
-                    ScrollArea::vertical().max_height(260.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(text).desired_rows(8).desired_width(f32::INFINITY).hint_text("Вставьте сюда…").font(egui::TextStyle::Monospace)); });
+                    ScrollArea::vertical().max_height(260.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(text).desired_rows(8).desired_width(f32::INFINITY).hint_text(crate::tr!("Вставьте сюда…", "Paste here…")).font(egui::TextStyle::Monospace)); });
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if w::button(ui, &p, Kind::Text, Some(icon::PASTE), "Из буфера").clicked() { if let Some(t) = util::clipboard_text() { *text = t; } }
+                        if w::button(ui, &p, Kind::Text, Some(icon::PASTE), crate::tr!("Из буфера", "From clipboard")).clicked() { if let Some(t) = util::clipboard_text() { *text = t; } }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if w::button(ui, &p, Kind::Filled, None, "Добавить").clicked() && !text.trim().is_empty() { let t = text.clone(); keep = false; self.add(t); }
-                            if w::button(ui, &p, Kind::Text, None, "Отмена").clicked() { keep = false; }
+                            if w::button(ui, &p, Kind::Filled, None, crate::tr!("Добавить", "Add")).clicked() && !text.trim().is_empty() { let t = text.clone(); keep = false; self.add(t); }
+                            if w::button(ui, &p, Kind::Text, None, crate::tr!("Отмена", "Cancel")).clicked() { keep = false; }
                         });
                     });
                 }
@@ -681,8 +666,8 @@ impl App {
                     ScrollArea::both().max_height(460.0).show(ui, |ui| { let mut t = text.as_str(); ui.add(egui::TextEdit::multiline(&mut t).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).frame(false)); });
                     ui.add_space(12.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::button(ui, &p, Kind::Filled, None, "Закрыть").clicked() { keep = false; }
-                        if *copy && w::button(ui, &p, Kind::Text, Some(icon::COPY), "Копировать").clicked() { ui.ctx().copy_text(text.clone()); }
+                        if w::button(ui, &p, Kind::Filled, None, crate::tr!("Закрыть", "Close")).clicked() { keep = false; }
+                        if *copy && w::button(ui, &p, Kind::Text, Some(icon::COPY), crate::tr!("Копировать", "Copy")).clicked() { ui.ctx().copy_text(text.clone()); }
                     });
                 }
                 Modal::Confirm { title, text, action } => {
@@ -690,7 +675,7 @@ impl App {
                     ui.label(RichText::new(text.as_str()).color(p.muted));
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::button(ui, &p, Kind::Danger, None, "Да").clicked() {
+                        if w::button(ui, &p, Kind::Danger, None, crate::tr!("Да", "Yes")).clicked() {
                             keep = false;
                             match action {
                                 Confirmed::DeleteProfile(id) => { let id = id.clone(); store::update(|s| { s.profiles.retain(|x| x.id != id); if s.selected == id { s.selected = s.profiles.first().map(|x| x.id.clone()).unwrap_or_default(); } }); }
@@ -698,61 +683,61 @@ impl App {
                                 Confirmed::Reset => { store::update(|s| { let keep = (s.s("hwid"), s.s("clientNumericId")); s.settings = crate::model::defaults(); s.set("hwid", keep.0.into()); s.set("clientNumericId", keep.1.into()); }); let _ = crate::install::set_autostart(false); }
                             }
                         }
-                        if w::button(ui, &p, Kind::Text, None, "Отмена").clicked() { keep = false; }
+                        if w::button(ui, &p, Kind::Text, None, crate::tr!("Отмена", "Cancel")).clicked() { keep = false; }
                     });
                 }
                 Modal::Admin => {
-                    ui.label(RichText::new("Нужны права администратора").font(FontId::new(20.0, semibold())));
-                    ui.label(RichText::new("Режим TUN создаёт сетевой адаптер и меняет маршруты Windows. Перезапустите Wraith от имени администратора или подключитесь через системный прокси.").color(p.muted));
+                    ui.label(RichText::new(crate::tr!("Нужны права администратора", "Administrator rights needed")).font(FontId::new(20.0, semibold())));
+                    ui.label(RichText::new(crate::tr!("Режим TUN создаёт сетевой адаптер и меняет маршруты Windows. Перезапустите Wraith от имени администратора или подключитесь через системный прокси.", "TUN mode creates a network adapter and changes Windows routes. Restart Wraith as administrator or connect through the system proxy.")).color(p.muted));
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::button(ui, &p, Kind::Filled, Some(icon::SHIELD), "Перезапустить").clicked() {
+                        if w::button(ui, &p, Kind::Filled, Some(icon::SHIELD), crate::tr!("Перезапустить", "Restart")).clicked() {
                             keep = false;
-                            if util::relaunch_elevated("--connect --elevated") { core::shutdown(); std::process::exit(0); } else { self.toast("Запуск от администратора отменён"); }
+                            if util::relaunch_elevated("--connect --elevated") { core::shutdown(); std::process::exit(0); } else { self.toast(crate::tr!("Запуск от администратора отменён", "Start as administrator was cancelled")); }
                         }
-                        if w::button(ui, &p, Kind::Text, None, "Системный прокси").clicked() { keep = false; store::update(|s| s.set("tunnelMode", "proxy".into())); self.connect_selected(); }
+                        if w::button(ui, &p, Kind::Text, None, crate::tr!("Системный прокси", "System proxy")).clicked() { keep = false; store::update(|s| s.set("tunnelMode", "proxy".into())); self.connect_selected(); }
                     });
                 }
                 Modal::Rule { index, rule } => {
-                    ui.label(RichText::new(if index.is_some() { "Правило" } else { "Новое правило" }).font(FontId::new(20.0, semibold())));
+                    ui.label(RichText::new(if index.is_some() { crate::tr!("Правило", "Rule") } else { crate::tr!("Новое правило", "New rule") }).font(FontId::new(20.0, semibold())));
                     ui.add_space(8.0);
                     let mut name = rule.s("name"); let mut kind = rule.s("kind"); let mut value = rule.s("value"); let mut action = rule.s_or("action", "direct");
-                    ui.label(RichText::new("Название").size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY).hint_text("Например: Банки"));
-                    ui.label(RichText::new("Что сравнивать").size(12.5).color(p.muted)); w::picker(ui, "rule-kind", &mut kind, RULE_KINDS);
-                    ui.label(RichText::new("Значения — по одному в строке").size(12.5).color(p.muted));
+                    ui.label(RichText::new(crate::tr!("Название", "Name")).size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY).hint_text(crate::tr!("Например: Банки", "For example: Banks")));
+                    ui.label(RichText::new(crate::tr!("Что сравнивать", "Match by")).size(12.5).color(p.muted)); w::picker(ui, "rule-kind", &mut kind, &crate::model::rule_kinds());
+                    ui.label(RichText::new(crate::tr!("Значения — по одному в строке", "Values, one per line")).size(12.5).color(p.muted));
                     let hint = match kind.as_str() { "domain_suffix" => "sberbank.ru\ngosuslugi.ru", "ip_cidr" => "10.0.0.0/8", "geosite" => "category-ads-all", "geoip" => "ru", "process" => "telegram.exe", _ => "" };
                     ui.add(egui::TextEdit::multiline(&mut value).desired_rows(5).desired_width(f32::INFINITY).hint_text(hint));
-                    ui.label(RichText::new("Действие").size(12.5).color(p.muted));
-                    w::segmented(ui, &p, &mut action, &[("direct", "Напрямую"), ("proxy", "Через VPN"), ("block", "Блокировать")], ui.available_width());
+                    ui.label(RichText::new(crate::tr!("Действие", "Action")).size(12.5).color(p.muted));
+                    w::segmented(ui, &p, &mut action, &[("direct", crate::tr!("Напрямую", "Direct")), ("proxy", crate::tr!("Через VPN", "Through VPN")), ("block", crate::tr!("Блокировать", "Block"))], ui.available_width());
                     rule.insert("name".into(), name.into()); rule.insert("kind".into(), kind.into()); rule.insert("value".into(), value.clone().into()); rule.insert("action".into(), action.into());
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
-                        if let Some(i) = *index { if w::button(ui, &p, Kind::Danger, Some(icon::DELETE), "Удалить").clicked() { keep = false; store::update(|s| { if i < s.rules.len() { s.rules.remove(i); } }); self.after_change("mode"); } }
+                        if let Some(i) = *index { if w::button(ui, &p, Kind::Danger, Some(icon::DELETE), crate::tr!("Удалить", "Delete")).clicked() { keep = false; store::update(|s| { if i < s.rules.len() { s.rules.remove(i); } }); self.after_change("mode"); } }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if w::button(ui, &p, Kind::Filled, None, "Сохранить").clicked() && !value.trim().is_empty() {
+                            if w::button(ui, &p, Kind::Filled, None, crate::tr!("Сохранить", "Save")).clicked() && !value.trim().is_empty() {
                                 keep = false; let r = rule.clone(); let i = *index;
                                 store::update(|s| match i { Some(i) if i < s.rules.len() => s.rules[i] = r, _ => s.rules.push(r) });
                                 self.after_change("mode");
                             }
-                            if w::button(ui, &p, Kind::Text, None, "Отмена").clicked() { keep = false; }
+                            if w::button(ui, &p, Kind::Text, None, crate::tr!("Отмена", "Cancel")).clicked() { keep = false; }
                         });
                     });
                 }
                 Modal::Sub { sub } => {
-                    ui.label(RichText::new("Подписка").font(FontId::new(20.0, semibold())));
+                    ui.label(RichText::new(crate::tr!("Подписка", "Subscription")).font(FontId::new(20.0, semibold())));
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Название").size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut sub.name).desired_width(f32::INFINITY));
-                    ui.label(RichText::new("Адрес").size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut sub.url).desired_width(f32::INFINITY));
+                    ui.label(RichText::new(crate::tr!("Название", "Name")).size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut sub.name).desired_width(f32::INFINITY));
+                    ui.label(RichText::new(crate::tr!("Адрес", "Address")).size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut sub.url).desired_width(f32::INFINITY));
                     let mut interval = sub.interval_hours.to_string();
-                    ui.label(RichText::new("Интервал обновления, часов").size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut interval).desired_width(120.0));
+                    ui.label(RichText::new(crate::tr!("Интервал обновления, часов", "Update interval, hours")).size(12.5).color(p.muted)); ui.add(egui::TextEdit::singleline(&mut interval).desired_width(120.0));
                     if let Ok(h) = interval.trim().parse::<i64>() { sub.interval_hours = h.clamp(1, 168); }
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::button(ui, &p, Kind::Filled, None, "Сохранить").clicked() {
-                            if !sub.url.starts_with("https://") { self.toast("Адрес подписки должен начинаться с https://"); }
+                        if w::button(ui, &p, Kind::Filled, None, crate::tr!("Сохранить", "Save")).clicked() {
+                            if !sub.url.starts_with("https://") { self.toast(crate::tr!("Адрес подписки должен начинаться с https://", "The subscription address must start with https://")); }
                             else { keep = false; let s2 = sub.clone(); store::update(|s| if let Some(x) = s.subscriptions.iter_mut().find(|x| x.id == s2.id) { x.name = s2.name.clone(); x.url = s2.url.clone(); x.interval_hours = s2.interval_hours; }); }
                         }
-                        if w::button(ui, &p, Kind::Text, None, "Отмена").clicked() { keep = false; }
+                        if w::button(ui, &p, Kind::Text, None, crate::tr!("Отмена", "Cancel")).clicked() { keep = false; }
                     });
                 }
                 Modal::Update { release } => {
@@ -762,11 +747,11 @@ impl App {
                     let progress = self.shared.lock().unwrap().download;
                     if let Some((done, total)) = progress {
                         ui.add_space(8.0);
-                        ui.add(egui::ProgressBar::new(if total > 0 { done as f32 / total as f32 } else { 0.0 }).text(format!("{} из {}", util::bytes(done as i64), util::bytes(total as i64))));
+                        ui.add(egui::ProgressBar::new(if total > 0 { done as f32 / total as f32 } else { 0.0 }).text(crate::trf!("{} из {}", "{} of {}", util::bytes(done as i64), util::bytes(total as i64))));
                     }
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if progress.is_none() && w::button(ui, &p, Kind::Filled, Some(icon::DOWNLOAD), "Скачать и установить").clicked() {
+                        if progress.is_none() && w::button(ui, &p, Kind::Filled, Some(icon::DOWNLOAD), crate::tr!("Скачать и установить", "Download and install")).clicked() {
                             let r = release.clone(); let shared = self.shared.clone();
                             shared.lock().unwrap().download = Some((0, r.size.max(0) as u64));
                             std::thread::spawn(move || {
@@ -778,7 +763,7 @@ impl App {
                                 }
                             });
                         }
-                        if w::button(ui, &p, Kind::Text, None, "Позже").clicked() { keep = false; }
+                        if w::button(ui, &p, Kind::Text, None, crate::tr!("Позже", "Later")).clicked() { keep = false; }
                     });
                 }
                 Modal::Value { key, title, hint, value, numeric } => {
@@ -790,9 +775,9 @@ impl App {
                     let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::button(ui, &p, Kind::Filled, None, "Сохранить").clicked() || enter {
+                        if w::button(ui, &p, Kind::Filled, None, crate::tr!("Сохранить", "Save")).clicked() || enter {
                             let v = value.trim().to_string();
-                            let parsed: Result<Value, String> = if *numeric { v.parse::<i64>().map(Value::from).map_err(|_| "Введите число".into()) } else { Ok(v.clone().into()) };
+                            let parsed: Result<Value, String> = if *numeric { v.parse::<i64>().map(Value::from).map_err(|_| crate::tr!("Введите число", "Enter a number").into()) } else { Ok(v.clone().into()) };
                             let valid = match key.as_str() {
                                 "proxyPort" | "httpProxyPort" => v.parse::<u16>().map(|n| n >= 1024).unwrap_or(false),
                                 "mtu" => v.parse::<i64>().map(|n| (1280..=9000).contains(&n)).unwrap_or(false),
@@ -800,9 +785,9 @@ impl App {
                                 "proxyPassword" => v.is_empty() || v.chars().count() >= 8,
                                 _ => true,
                             };
-                            match parsed { Ok(val) if valid => { keep = false; let k = key.clone(); store::update(|s| s.set(&k, val)); self.after_change(&k.clone()); } _ => self.toast("Некорректное значение") }
+                            match parsed { Ok(val) if valid => { keep = false; let k = key.clone(); store::update(|s| s.set(&k, val)); self.after_change(&k.clone()); } _ => self.toast(crate::tr!("Некорректное значение", "Invalid value")) }
                         }
-                        if w::button(ui, &p, Kind::Text, None, "Отмена").clicked() { keep = false; }
+                        if w::button(ui, &p, Kind::Text, None, crate::tr!("Отмена", "Cancel")).clicked() { keep = false; }
                     });
                 }
             }

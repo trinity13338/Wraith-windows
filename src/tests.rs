@@ -72,10 +72,10 @@ fn links_become_xray_outbounds() {
     let src = crate::xray::source(&p).unwrap();
     let o = &src.objects("outbounds")[0];
     assert_eq!(o.o("streamSettings").unwrap().o("realitySettings").unwrap().s("serverName"), "www.example.org");
-    // TUIC and obfuscated Hysteria2 go to sing-box.
-    assert!(profile("tuic://uuid:pass@example.com:443?sni=example.com#t").is_singbox());
-    assert!(profile("hy2://pass@example.com:443?obfs=salamander&obfs-password=x#h").is_singbox());
-    assert!(!profile("hy2://pass@example.com:443?sni=example.com#h").is_singbox());
+    // TUIC and obfuscated Hysteria2 are not supported by Xray; plain Hysteria2 is.
+    assert!(importer::parse("tuic://uuid:pass@example.com:443?sni=example.com#t").is_err());
+    assert!(importer::parse("hy2://pass@example.com:443?obfs=salamander&obfs-password=x#h").is_err());
+    assert_eq!(profile("hy2://pass@example.com:443?sni=example.com#h").protocol, "hysteria2");
     let ss = profile("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388#ss");
     assert_eq!(ss.protocol, "shadowsocks");
 }
@@ -215,90 +215,6 @@ fn live_tunnel_config_carries_traffic() {
 }
 
 #[test]
-fn real_singbox_accepts_generated_configs() {
-    let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.tools/sing-box/sing-box.exe");
-    if !exe.exists() { return; }
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-configs"); std::fs::create_dir_all(&dir).unwrap();
-    let cases = [
-        ("tuic", "tuic://00948d0e-1437-0005-abfe-bb90bf6bc89a:pass@example.com:443?sni=example.com&congestion_control=bbr#t", json!({})),
-        ("hy2-obfs", "hy2://pass@example.com:443?sni=example.com&obfs=salamander&obfs-password=x&mport=20000-30000#h", json!({"tunnelMode": "tun"})),
-        ("anytls", "anytls://pass@example.com:443?sni=example.com#a", json!({"customDns": true, "mode": "global", "ipMode": "v6"})),
-        ("vless-h2", "vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@example.com:443?type=http&security=tls&sni=example.com&path=%2Fh#h2", json!({})),
-    ];
-    for (name, link, settings) in cases {
-        let p = profile(link); assert!(p.is_singbox(), "{name} should use sing-box");
-        let mut st = state(settings); st.rules.push(json!({"kind": "process", "value": "telegram.exe", "action": "direct", "enabled": true}).as_object().unwrap().clone());
-        let c = crate::singbox::build(&st, &p, &["192.168.1.1".into()], 9090, "x").unwrap();
-        let path = dir.join(format!("sb-{name}.json")); std::fs::write(&path, serde_json::to_vec_pretty(&c).unwrap()).unwrap();
-        let out = std::process::Command::new(&exe).args(["check", "-c"]).arg(&path).output().unwrap();
-        assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
-        let probe = crate::singbox::build_probe(&st, &p, 20000).unwrap();
-        let path = dir.join(format!("sb-probe-{name}.json")); std::fs::write(&path, serde_json::to_vec_pretty(&probe).unwrap()).unwrap();
-        let out = std::process::Command::new(&exe).args(["check", "-c"]).arg(&path).output().unwrap();
-        assert!(out.status.success(), "probe {name}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-}
-
-#[test]
-fn engine_preference_converts_links_when_possible() {
-    let reality = profile("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@example.com:443?type=tcp&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=01&sni=www.example.org&flow=xtls-rprx-vision#r");
-    let vmess = profile("vmess://eyJhZGQiOiJleGFtcGxlLmNvbSIsInBvcnQiOiI0NDMiLCJpZCI6IjAwOTQ4ZDBlLTE0MzctMDAwNS1hYmZlLWJiOTBiZjZiYzg5YSIsIm5ldCI6IndzIiwicGF0aCI6Ii93cyIsInRscyI6InRscyIsInNuaSI6ImV4YW1wbGUuY29tIiwicHMiOiJ2bSJ9");
-    let ss = profile("ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388#ss");
-    let xhttp = profile("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@example.com:443?type=xhttp&security=tls&sni=example.com#x");
-    let doc = profile(BALANCER);
-    for p in [&reality, &vmess, &ss] { assert!(importer::for_engine(p, "singbox").is_singbox(), "{} should convert", p.name); }
-    assert!(!importer::for_engine(&xhttp, "singbox").is_singbox(), "XHTTP stays on Xray");
-    assert!(!importer::for_engine(&doc, "singbox").is_singbox(), "Xray JSON stays on Xray");
-    let tuic = profile("tuic://00948d0e-1437-0005-abfe-bb90bf6bc89a:pass@example.com:443#t");
-    assert!(importer::for_engine(&tuic, "xray").is_singbox(), "TUIC stays on sing-box");
-    let hy = importer::for_engine(&profile("hy2://pass@example.com:443?sni=example.com#h"), "singbox");
-    assert!(hy.is_singbox());
-    let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.tools/sing-box/sing-box.exe");
-    if !exe.exists() { return; }
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-configs");
-    for p in [&reality, &vmess, &ss] {
-        let sb = importer::for_engine(p, "singbox");
-        let c = crate::singbox::build(&state(json!({"tunnelMode": "both"})), &sb, &[], 9090, "x").unwrap();
-        let path = dir.join(format!("pref-{}.json", p.name)); std::fs::write(&path, serde_json::to_vec_pretty(&c).unwrap()).unwrap();
-        let out = std::process::Command::new(&exe).args(["check", "-c"]).arg(&path).output().unwrap();
-        assert!(out.status.success(), "{}: {}", p.name, String::from_utf8_lossy(&out.stderr));
-    }
-}
-
-#[test]
-#[ignore]
-fn live_probe_on_singbox_preference() {
-    let Some(exe) = xray_exe() else { return };
-    let sb = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.tools/sing-box/sing-box.exe");
-    let tmp = std::env::temp_dir().join(format!("wraith-live-{}", crate::util::random_hex(4))); std::fs::create_dir_all(&tmp).unwrap();
-    std::env::set_var("LOCALAPPDATA", &tmp); let _ = std::fs::create_dir_all(crate::store::folder());
-    std::fs::copy(&sb, crate::util::app_dir().join("sing-box.exe")).ok();
-    let port = crate::util::free_port();
-    let server = json!({"inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "vless", "settings": {"clients": [{"id": "00948d0e-1437-0005-abfe-bb90bf6bc89a"}], "decryption": "none"}}], "outbounds": [{"protocol": "freedom"}]});
-    std::fs::write(tmp.join("s.json"), server.to_string()).unwrap();
-    let mut srv = std::process::Command::new(&exe).args(["run", "-c"]).arg(tmp.join("s.json")).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(800));
-    let link = profile(&format!("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@127.0.0.1:{port}?type=tcp&security=none#local"));
-    let results = std::sync::Arc::new(std::sync::Mutex::new(vec![])); let r2 = results.clone();
-    let report: crate::pinger::Report = std::sync::Arc::new(move |_: &str, ms: i64, err: String| r2.lock().unwrap().push((ms, err)));
-    let mut st = AppState::default(); st.set("core", "singbox".into());
-    crate::pinger::run(st, vec![link], report, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    let _ = srv.kill();
-    let r = results.lock().unwrap().clone(); eprintln!("{r:?}");
-    assert!(r[0].0 > 0, "{}", r[0].1);
-}
-
-#[test]
-fn insecure_links_run_on_singbox_and_pins_stay_on_xray() {
-    assert!(profile("hy2://pass@example.com:443?sni=example.com&insecure=1#h").is_singbox());
-    assert!(profile("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@example.com:443?type=ws&security=tls&allowInsecure=1#v").is_singbox());
-    let pinned = profile("hy2://pass@example.com:443?sni=example.com&insecure=1&pinSHA256=38:54:7a:b1#h");
-    assert!(!pinned.is_singbox());
-    let doc = BALANCER.replace(r#""streamSettings":{"security":"tls"}"#, r#""streamSettings":{"security":"tls","tlsSettings":{"serverName":"x","allowInsecure":true}}"#);
-    xray_accepts(&crate::xray::build(&state(json!({})), &profile(&doc), &[], 1).unwrap().config, "allowinsecure-doc");
-}
-
-#[test]
 fn extract_strips_top_folder_and_refuses_traversal() {
     use std::io::Write;
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -351,4 +267,16 @@ fn own_dns_wins_over_provider_dns() {
     let p = profile(BALANCER);
     let c = crate::xray::build(&state(json!({"dnsFromJson": true, "customDns": true, "tunnelDns": "https://dns.example.com/dns-query"})), &p, &["192.168.1.138".into()], 1).unwrap().config;
     assert_eq!(c.o("dns").unwrap().a("servers").unwrap()[0], json!("https://dns.example.com/dns-query"));
+}
+
+#[test]
+fn insecure_links_and_wireguard_run_on_xray() {
+    let hy = profile("hy2://pass@example.com:443?sni=example.com&insecure=1#h");
+    let c = crate::xray::build(&state(json!({})), &hy, &[], 1).unwrap().config;
+    assert!(!serde_json::to_string(&c).unwrap().contains("allowInsecure"));
+    xray_accepts(&c, "hy2-insecure");
+    let wg = profile("wireguard://cGFzc3dvcmRwYXNzd29yZHBhc3N3b3JkcGFzc3dvcmQ=@wg.example.com:51820?publickey=cHVibGljcHVibGljcHVibGljcHVibGljcHVibGljcHU%3D&address=10.0.0.2%2F32&mtu=1280#wg");
+    assert_eq!((wg.protocol.as_str(), wg.host.as_str(), wg.port), ("wireguard", "wg.example.com", 51820));
+    xray_accepts(&crate::xray::build(&state(json!({"tunnelMode": "tun"})), &wg, &[], 1).unwrap().config, "wireguard");
+    assert!(importer::parse(r#"{"outbounds":[{"type":"vless","tag":"p","server":"x","server_port":1}]}"#).is_err());
 }

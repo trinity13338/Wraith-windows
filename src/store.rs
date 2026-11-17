@@ -23,6 +23,20 @@ pub fn init() {
     if state.schema < 4 { if state.settings.s("tunnelMode") == "proxy" || state.settings.s("tunnelMode").is_empty() { state.set("tunnelMode", "both".into()); } state.schema = 4; }
     if state.settings.s("hwid").is_empty() { state.set("hwid", crate::util::uuid4().into()); }
     for (k, v) in crate::model::defaults() { state.settings.entry(k).or_insert(v); }
+    // 0.12: sing-box is gone. Servers it ran are converted for Xray where possible, otherwise removed.
+    if state.profiles.iter().any(|p| p.engine == "singbox") {
+        let mut kept = vec![];
+        for p in std::mem::take(&mut state.profiles) {
+            if p.engine != "singbox" { kept.push(p); continue; }
+            match crate::importer::parse(&p.source).ok().and_then(|r| r.profiles.into_iter().next()) {
+                Some(n) => kept.push(crate::model::Profile { id: p.id, group: p.group, favorite: p.favorite, ..n }),
+                None => crate::log::add(crate::trf!("«{}» удалён: Xray его не поддерживает.", "«{}» removed: Xray does not support it.", p.name)),
+            }
+        }
+        state.profiles = kept;
+        if state.selected().is_none() { state.selected = state.profiles.first().map(|p| p.id.clone()).unwrap_or_default(); }
+    }
+    state.settings.remove("core");
     let _ = STATE.set(Mutex::new(state));
     save();
 }
@@ -45,7 +59,7 @@ pub fn save() {
             let tmp = file().with_extension("dat.new");
             if std::fs::write(&tmp, data).is_ok() { let _ = std::fs::rename(&tmp, file()); }
         }
-        Err(e) => crate::log::add(format!("Не удалось сохранить настройки: {e}")),
+        Err(e) => crate::log::add(crate::trf!("Не удалось сохранить настройки: {e}", "Could not save the settings: {e}")),
     }
 }
 
@@ -73,7 +87,7 @@ fn load() -> AppState {
 
 /// An unreadable file must never be replaced by an empty state on the next save. Keep a copy.
 fn backup_broken(path: &std::path::Path, why: &str) {
-    crate::log::add(format!("Не удалось прочитать настройки: {}", crate::log::safe(why)));
+    crate::log::add(crate::trf!("Не удалось прочитать настройки: {}", "Could not read the settings: {}", crate::log::safe(why)));
     let _ = std::fs::copy(path, path.with_extension(format!("broken-{}", crate::util::unix_now())));
 }
 
@@ -84,7 +98,7 @@ fn from_legacy(raw: &Obj) -> AppState {
     }
     state.set("tunnelMode", if raw.s("TunnelMode") == "TUN" { "tun" } else { "proxy" }.into());
     for sub in raw.objects("Subscriptions") {
-        state.subscriptions.push(Subscription { id: sub.s_or("Id", &crate::util::random_hex(16)), name: sub.s_or("Name", "Подписка"), url: sub.s("Url"), interval_hours: sub.i("IntervalHours", 24).max(1), ..Default::default() });
+        state.subscriptions.push(Subscription { id: sub.s_or("Id", &crate::util::random_hex(16)), name: sub.s_or("Name", crate::tr!("Подписка", "Subscription")), url: sub.s("Url"), interval_hours: sub.i("IntervalHours", 24).max(1), ..Default::default() });
     }
     for old in raw.objects("Profiles") {
         let source = old.first(&["JsonSource", "Source"]);
@@ -95,10 +109,10 @@ fn from_legacy(raw: &Obj) -> AppState {
                 if old.s("Id") == raw.s("Selected") { state.selected = p.id.clone(); }
                 state.profiles.push(p);
             },
-            Err(e) => crate::log::add(format!("Сервер «{}» не перенесён: {}", old.s("Name"), crate::log::safe(e))),
+            Err(e) => crate::log::add(crate::trf!("Сервер «{}» не перенесён: {}", "Server «{}» was not migrated: {}", old.s("Name"), crate::log::safe(e))),
         }
     }
-    crate::log::add(format!("Настройки Wraith 0.10 перенесены: {} серверов, {} подписок.", state.profiles.len(), state.subscriptions.len()));
+    crate::log::add(crate::trf!("Настройки Wraith 0.10 перенесены: {} серверов, {} подписок.", "Wraith 0.10 settings migrated: {} servers, {} subscriptions.", state.profiles.len(), state.subscriptions.len()));
     state
 }
 
@@ -134,7 +148,7 @@ fn protect(data: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
         if encrypt { CryptProtectData(&input, std::ptr::null(), &entropy, std::ptr::null(), std::ptr::null(), 0, &mut out) }
         else { CryptUnprotectData(&input, std::ptr::null_mut(), &entropy, std::ptr::null(), std::ptr::null(), 0, &mut out) }
     };
-    if ok == 0 { return Err("DPAPI отказал (данные другого пользователя Windows?)".into()); }
+    if ok == 0 { return Err(crate::tr!("DPAPI отказал (данные другого пользователя Windows?)", "DPAPI refused (data of another Windows user?)").into()); }
     let result = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec() };
     unsafe { LocalFree(out.pbData as _) };
     Ok(result)

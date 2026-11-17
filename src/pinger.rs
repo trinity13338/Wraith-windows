@@ -13,8 +13,6 @@ use std::time::{Duration, Instant};
 pub type Report = Arc<dyn Fn(&str, i64, String) + Send + Sync>;
 
 pub fn run(state: AppState, profiles: Vec<Profile>, report: Report, cancel: Arc<AtomicBool>) {
-    let preferred = state.settings.s_or("core", "xray");
-    let profiles: Vec<Profile> = profiles.iter().map(|p| crate::importer::for_engine(p, &preferred)).collect();
     let s = &state.settings;
     let kind = s.s_or("pingType", "proxyGet"); let timeout = s.i("pingTimeout", 5000).max(1000) as u64;
     if kind == "tcp" || kind == "icmp" {
@@ -22,14 +20,7 @@ pub fn run(state: AppState, profiles: Vec<Profile>, report: Report, cancel: Arc<
         return;
     }
     let url = s.s_or("pingUrl", "https://www.gstatic.com/generate_204"); let head = kind == "proxyHead"; let keep_alive = s.s_or("pingMode", "keepalive") != "double";
-    let (sing, xray): (Vec<Profile>, Vec<Profile>) = profiles.into_iter().partition(|p| p.is_singbox());
-    let st = state.clone(); let r2 = report.clone(); let c2 = cancel.clone(); let u2 = url.clone();
-    let singbox_thread = std::thread::spawn(move || parallel(sing, 3, |p| {
-        if c2.load(Ordering::Relaxed) { return; }
-        match singbox_probe(&st, &p, &u2, head, keep_alive, timeout) { Ok(ms) => r2(&p.id, ms, String::new()), Err(e) => r2(&p.id, -1, crate::log::safe(e)) }
-    }));
-    xray_batch(&state, xray, &url, head, keep_alive, timeout, &report, &cancel);
-    let _ = singbox_thread.join();
+    xray_batch(&state, profiles, &url, head, keep_alive, timeout, &report, &cancel);
 }
 
 fn parallel<T: Send + 'static>(items: Vec<T>, threads: usize, f: impl Fn(T) + Send + Sync) {
@@ -38,20 +29,20 @@ fn parallel<T: Send + 'static>(items: Vec<T>, threads: usize, f: impl Fn(T) + Se
 }
 
 fn tcp(p: &Profile, timeout: u64) -> Result<i64, String> {
-    if p.host.is_empty() || p.port < 1 { return Err("Нет адреса сервера.".into()); }
-    if ["hysteria2", "tuic", "wireguard"].contains(&p.protocol.as_str()) { return Err("UDP-протокол: используйте проверку через прокси.".into()); }
+    if p.host.is_empty() || p.port < 1 { return Err(crate::tr!("Нет адреса сервера.", "No server address.").into()); }
+    if ["hysteria2", "tuic", "wireguard"].contains(&p.protocol.as_str()) { return Err(crate::tr!("UDP-протокол: используйте проверку через прокси.", "UDP protocol: use the check through the proxy.").into()); }
     use std::net::ToSocketAddrs;
-    let addr = (p.host.as_str(), p.port as u16).to_socket_addrs().map_err(|e| format!("DNS: {e}"))?.next().ok_or("Адрес не найден")?;
+    let addr = (p.host.as_str(), p.port as u16).to_socket_addrs().map_err(|e| format!("DNS: {e}"))?.next().ok_or(crate::tr!("Адрес не найден", "Address not found"))?;
     let start = Instant::now();
-    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(timeout)).map_err(|_| "Нет ответа".to_string())?;
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(timeout)).map_err(|_| crate::tr!("Нет ответа", "No answer").to_string())?;
     Ok(start.elapsed().as_millis().max(1) as i64)
 }
 fn icmp(p: &Profile, timeout: u64) -> Result<i64, String> {
-    if p.host.is_empty() { return Err("Нет адреса сервера.".into()); }
+    if p.host.is_empty() { return Err(crate::tr!("Нет адреса сервера.", "No server address.").into()); }
     let out = util::hidden(std::path::Path::new("ping")).args(["-n", "1", "-w", &timeout.to_string(), &p.host]).output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
     let re = regex::Regex::new(r"[=<](\d+)\s?(ms|мс)").unwrap();
-    re.captures(&text).and_then(|c| c[1].parse::<i64>().ok()).map(|v| v.max(1)).ok_or_else(|| "ICMP недоступен или заблокирован".into())
+    re.captures(&text).and_then(|c| c[1].parse::<i64>().ok()).map(|v| v.max(1)).ok_or_else(|| crate::tr!("ICMP недоступен или заблокирован", "ICMP is unavailable or blocked").into())
 }
 
 struct Job { profile: Profile, endpoint: Endpoint, port: u16 }
@@ -64,7 +55,7 @@ fn xray_batch(state: &AppState, profiles: Vec<Profile>, url: &str, head: bool, k
             let list: Vec<Endpoint> = source.objects("outbounds").into_iter()
                 .filter(|o| tags.contains(&o.s("tag")) || (o.s("tag").is_empty() && !LOCAL_PROTOCOLS.contains(&o.s("protocol").as_str())))
                 .flat_map(|o| endpoints(o)).filter(|e| seen.insert(format!("{}{}:{}", e.protocol, e.host, e.port))).take(24).collect();
-            if list.is_empty() { Err("Нет сервера для проверки.".into()) } else { Ok(list) }
+            if list.is_empty() { Err(crate::tr!("Нет сервера для проверки.", "No server to check.").into()) } else { Ok(list) }
         })();
         match result { Ok(list) => for e in list { jobs.push(Job { profile: p.clone(), endpoint: e, port: 0 }); }, Err(e) => report(&p.id, -1, e) }
     }
@@ -77,7 +68,7 @@ fn xray_batch(state: &AppState, profiles: Vec<Profile>, url: &str, head: bool, k
         if ms > 0 { entry.1.push(ms); } else if entry.2.is_empty() { entry.2 = err; }
         entry.0 -= 1;
         if entry.0 == 0 {
-            match entry.1.iter().min() { Some(best) => report(id, *best, String::new()), None => report(id, -1, if entry.2.is_empty() { "Нет ответа".into() } else { entry.2.clone() }) }
+            match entry.1.iter().min() { Some(best) => report(id, *best, String::new()), None => report(id, -1, if entry.2.is_empty() { crate::tr!("Нет ответа", "No answer").into() } else { entry.2.clone() }) }
         }
     };
     let mut iter = jobs.into_iter().peekable();
@@ -97,7 +88,7 @@ fn run_xray(state: &AppState, chunk: Vec<Job>, url: &str, head: bool, keep_alive
     }
     if valid.is_empty() { return; }
     let result = (|| -> Result<(), String> {
-        let exe = crate::core::xray_exe(); if !exe.exists() { return Err("Не найден xray.exe рядом с Wraith.exe.".into()); }
+        let exe = crate::core::xray_exe(); if !exe.exists() { return Err(crate::tr!("Не найден xray.exe рядом с Wraith.exe.", "xray.exe not found next to Wraith.exe.").into()); }
         // Config through stdin: nothing on disk to swap while Xray starts.
         let bytes = serde_json::to_vec(&crate::xray::assemble_probe(inbounds, outbounds, rules, dns)).unwrap();
         let mut child = util::hidden(&exe).args(["run", "-c", "stdin:"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
@@ -108,15 +99,15 @@ fn run_xray(state: &AppState, chunk: Vec<Job>, url: &str, head: bool, keep_alive
             while !util::port_open(job.port) {
                 if let Ok(Some(_)) = guard.0.try_wait() {
                     let mut err = String::new(); if let Some(mut e) = guard.0.stderr.take() { use std::io::Read; let _ = e.read_to_string(&mut err); }
-                    return Err(format!("Xray не запустил проверку: {}", util::tail(&err, 300)));
+                    return Err(crate::trf!("Xray не запустил проверку: {}", "Xray did not start the check: {}", util::tail(&err, 300)));
                 }
-                if Instant::now() > deadline || cancel.load(Ordering::Relaxed) { return Err("Xray не открыл локальный вход для проверки.".into()); }
+                if Instant::now() > deadline || cancel.load(Ordering::Relaxed) { return Err(crate::tr!("Xray не открыл локальный вход для проверки.", "Xray did not open the local inlet for the check.").into()); }
                 std::thread::sleep(Duration::from_millis(30));
             }
         }
         let jobs: Vec<(String, u16)> = valid.iter().map(|j| (j.profile.id.clone(), j.port)).collect();
         parallel(jobs, 16, |(id, port)| {
-            if cancel.load(Ordering::Relaxed) { done(&id, -1, "Проверка отменена".into()); return; }
+            if cancel.load(Ordering::Relaxed) { done(&id, -1, crate::tr!("Проверка отменена", "Check cancelled").into()); return; }
             match measure(url, head, keep_alive, timeout, port) { Ok(ms) => done(&id, ms, String::new()), Err(e) => done(&id, -1, e) }
         });
         drop(guard); Ok(())
@@ -126,24 +117,6 @@ fn run_xray(state: &AppState, chunk: Vec<Job>, url: &str, head: bool, keep_alive
 struct KillOnDrop<'a>(&'a mut std::process::Child);
 impl Drop for KillOnDrop<'_> { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
 
-fn singbox_probe(state: &AppState, p: &Profile, url: &str, head: bool, keep_alive: bool, timeout: u64) -> Result<i64, String> {
-    let exe = crate::core::singbox_exe(); if !exe.exists() { return Err("Не найден sing-box.exe рядом с Wraith.exe.".into()); }
-    let port = util::free_port(); let path = util::runtime_dir().join(format!("probe-{}.json", util::random_hex(8)));
-    std::fs::write(&path, serde_json::to_vec(&crate::singbox::build_probe(state, p, port)?).unwrap()).map_err(|e| e.to_string())?;
-    let result = (|| {
-        let mut child = util::hidden(&exe).args(["run", "-c", &path.to_string_lossy()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
-        let guard = KillOnDrop(&mut child);
-        let deadline = Instant::now() + Duration::from_secs(6);
-        while !util::port_open(port) {
-            if let Ok(Some(_)) = guard.0.try_wait() { return Err("sing-box не запустил проверку.".to_string()); }
-            if Instant::now() > deadline { return Err("sing-box не открыл вход для проверки.".into()); }
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        measure(url, head, keep_alive, timeout, port)
-    })();
-    let _ = std::fs::remove_file(&path);
-    result
-}
 
 /// Two requests through the local inlet; the best one counts (keep-alive reuses the connection).
 pub fn measure(url: &str, head: bool, keep_alive: bool, timeout: u64, port: u16) -> Result<i64, String> {
@@ -163,16 +136,16 @@ pub fn measure(url: &str, head: bool, keep_alive: bool, timeout: u64, port: u16)
             Err(e) => { last = short_error(&e.to_string()); break; }
         }
     }
-    if best == i64::MAX { Err(if last.is_empty() { "Нет ответа".into() } else { last }) } else { Ok(best) }
+    if best == i64::MAX { Err(if last.is_empty() { crate::tr!("Нет ответа", "No answer").into() } else { last }) } else { Ok(best) }
 }
 
 pub fn short_error(e: &str) -> String {
     let l = e.to_lowercase();
-    if l.contains("reality") { "Reality: проверка не пройдена".into() }
-    else if l.contains("timed out") || l.contains("timeout") || l.contains("deadline") || l.contains("did not properly respond") || l.contains("connection attempt failed") || l.contains("10060") { "Нет ответа".into() }
-    else if l.contains("refused") { "Соединение отклонено".into() }
-    else if l.contains("certificate") || l.contains("x509") { "Ошибка сертификата TLS".into() }
-    else if l.contains("connection reset") || l.contains("closed") { "Соединение сброшено".into() }
+    if l.contains("reality") { crate::tr!("Reality: проверка не пройдена", "Reality: verification failed").into() }
+    else if l.contains("timed out") || l.contains("timeout") || l.contains("deadline") || l.contains("did not properly respond") || l.contains("connection attempt failed") || l.contains("10060") { crate::tr!("Нет ответа", "No answer").into() }
+    else if l.contains("refused") { crate::tr!("Соединение отклонено", "Connection refused").into() }
+    else if l.contains("certificate") || l.contains("x509") { crate::tr!("Ошибка сертификата TLS", "TLS certificate error").into() }
+    else if l.contains("connection reset") || l.contains("closed") { crate::tr!("Соединение сброшено", "Connection reset").into() }
     else { crate::log::safe(e) }
 }
 
@@ -196,8 +169,8 @@ mod keepalive {
     }
 
     pub fn measure(url: &str, head: bool, timeout: u64, port: u16) -> Result<i64, String> {
-        let u = url::Url::parse(url).map_err(|_| "Некорректный адрес проверки".to_string())?;
-        let host = u.host_str().ok_or("Нет хоста в адресе проверки")?.to_string();
+        let u = url::Url::parse(url).map_err(|_| crate::tr!("Некорректный адрес проверки", "Invalid check address").to_string())?;
+        let host = u.host_str().ok_or(crate::tr!("Нет хоста в адресе проверки", "No host in the check address"))?.to_string();
         let https = u.scheme() == "https";
         let target_port = u.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
         let path = match u.query() { Some(q) => format!("{}?{q}", u.path()), None => u.path().to_string() };
@@ -211,8 +184,8 @@ mod keepalive {
             write!(tcp, "CONNECT {host}:{target_port} HTTP/1.1\r\nHost: {host}:{target_port}\r\n\r\n").map_err(|e| e.to_string())?;
             let mut reader = BufReader::new(tcp.try_clone().map_err(|e| e.to_string())?);
             let status = read_head(&mut reader)?;
-            if !(200..300).contains(&status.0) { return Err(format!("Прокси ответил {}", status.0)); }
-            let name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| "Некорректное имя хоста".to_string())?;
+            if !(200..300).contains(&status.0) { return Err(crate::trf!("Прокси ответил {}", "The proxy answered {}", status.0)); }
+            let name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| crate::tr!("Некорректное имя хоста", "Invalid host name").to_string())?;
             let conn = rustls::ClientConnection::new(tls_config(), name).map_err(|e| e.to_string())?;
             let mut tls = rustls::StreamOwned::new(conn, tcp);
             for i in 0..2 {
@@ -234,15 +207,15 @@ mod keepalive {
                 if close && i == 0 { break; }
             }
         }
-        samples.into_iter().min().ok_or_else(|| "Нет ответа".to_string())
+        samples.into_iter().min().ok_or_else(|| crate::tr!("Нет ответа", "No answer").to_string())
     }
 
     /// Status line and headers → (status, content-length, chunked, close)
     fn read_head(r: &mut impl BufRead) -> Result<(u16, Option<usize>, bool, bool), String> {
         let mut line = String::new();
         r.read_line(&mut line).map_err(|e| crate::pinger::short_error(&e.to_string()))?;
-        if line.is_empty() { return Err("Соединение закрыто без ответа".into()); }
-        let status: u16 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("Сервер не вернул HTTP-ответ")?;
+        if line.is_empty() { return Err(crate::tr!("Соединение закрыто без ответа", "Connection closed without an answer").into()); }
+        let status: u16 = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or(crate::tr!("Сервер не вернул HTTP-ответ", "The server did not return an HTTP answer"))?;
         let (mut length, mut chunked, mut close) = (None, false, false);
         loop {
             let mut h = String::new();

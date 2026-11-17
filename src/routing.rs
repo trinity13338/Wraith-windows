@@ -6,8 +6,8 @@ use crate::obj;
 use serde_json::Value;
 
 pub fn decode(link: &str) -> Result<Obj, String> {
-    if !link.starts_with("happ://routing/add/") && !link.starts_with("happ://routing/onadd/") { return Err("Некорректный профиль маршрутизации.".into()); }
-    let slash = link["happ://routing/".len()..].find('/').map(|i| i + "happ://routing/".len()).ok_or("Некорректный профиль маршрутизации.")?;
+    if !link.starts_with("happ://routing/add/") && !link.starts_with("happ://routing/onadd/") { return Err(crate::tr!("Некорректный профиль маршрутизации.", "Invalid routing profile.").into()); }
+    let slash = link["happ://routing/".len()..].find('/').map(|i| i + "happ://routing/".len()).ok_or(crate::tr!("Некорректный профиль маршрутизации.", "Invalid routing profile."))?;
     parse_obj(&base64_text(link[slash + 1..].trim())?)
 }
 
@@ -17,7 +17,7 @@ pub fn profile_for(state: &AppState, p: &Profile) -> Option<Obj> {
     if p.group.is_empty() { return None; }
     let sub = state.subscription(&p.group)?;
     if !sub.routing_enabled || sub.format == "json" || sub.routing_link.is_empty() || sub.routing_link.starts_with("happ://routing/off") { return None; }
-    match decode(&sub.routing_link) { Ok(r) => Some(r), Err(e) => { crate::log::add(format!("Профиль маршрутизации подписки не разобран: {e}")); None } }
+    match decode(&sub.routing_link) { Ok(r) => Some(r), Err(e) => { crate::log::add(crate::trf!("Профиль маршрутизации подписки не разобран: {e}", "The subscription's routing profile could not be read: {e}")); None } }
 }
 
 /// DNS address from the documented triple (type + domain + ip) or the short RemoteDns form.
@@ -51,7 +51,7 @@ pub fn rules_for(state: &AppState, p: &Profile) -> Vec<Obj> {
 }
 
 pub fn append(out: &mut Vec<Obj>, json: &Obj) {
-    let name = json.s_or("Name", "Профиль провайдера");
+    let name = json.s_or("Name", crate::tr!("Профиль провайдера", "Provider profile"));
     if let Some(ordered) = json.a("Rules").filter(|a| !a.is_empty()) {
         for rule in ordered.iter().filter_map(|v| v.as_object()) {
             let action = rule.s_or("action", "proxy");

@@ -16,7 +16,7 @@ pub fn install_dir() -> PathBuf {
 /// Unpacks a release zip into `dir`. A single top folder in the archive is stripped. A file that is
 /// in use (the running Wraith.exe) is renamed to *.old first; *.old files are removed on next start.
 pub fn extract(zip_bytes: &[u8], dir: &Path, progress: &dyn Fn(usize, usize)) -> Result<(), String> {
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|e| format!("Архив повреждён: {e}"))?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|e| crate::trf!("Архив повреждён: {e}", "The archive is damaged: {e}"))?;
     let names: Vec<PathBuf> = (0..archive.len()).filter_map(|i| archive.by_index(i).ok().and_then(|f| f.enclosed_name())).collect();
     let top = names.first().and_then(|p| p.components().next()).map(|c| c.as_os_str().to_owned());
     let strip = top.is_some() && names.iter().all(|p| p.components().next().map(|c| Some(c.as_os_str().to_owned()) == top).unwrap_or(false)) && names.iter().any(|p| p.components().count() > 1);
@@ -35,7 +35,7 @@ pub fn extract(zip_bytes: &[u8], dir: &Path, progress: &dyn Fn(usize, usize)) ->
         if std::fs::write(&target, &data).is_err() {
             let old = target.with_extension(format!("{}.old", target.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default()));
             let _ = std::fs::remove_file(&old);
-            std::fs::rename(&target, &old).map_err(|e| format!("{} занят: {e}", rel.display()))?;
+            std::fs::rename(&target, &old).map_err(|e| crate::trf!("{} занят: {e}", "{} is in use: {e}", rel.display()))?;
             std::fs::write(&target, &data).map_err(|e| format!("{}: {e}", rel.display()))?;
         }
         progress(i + 1, total);
@@ -104,7 +104,7 @@ pub fn create_task(name: &str, exe: &Path, args: &str, at_logon: bool) -> Result
     std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
     let ok = schtasks(&["/create", "/tn", name, "/xml", &file.to_string_lossy(), "/f"]);
     let _ = std::fs::remove_file(&file);
-    if ok { Ok(()) } else { Err("Не удалось создать задачу в планировщике Windows.".into()) }
+    if ok { Ok(()) } else { Err(crate::tr!("Не удалось создать задачу в планировщике Windows.", "Could not create the Task Scheduler task.").into()) }
 }
 pub fn delete_task(name: &str) { schtasks(&["/delete", "/tn", name, "/f"]); }
 pub fn run_task(name: &str) -> bool { schtasks(&["/run", "/tn", name]) }
@@ -129,21 +129,21 @@ pub struct Options { pub autostart: bool, pub desktop: bool }
 /// Full installation (the setup runs elevated).
 pub fn install(payload: &[u8], options: &Options, status: &dyn Fn(&str)) -> Result<PathBuf, String> {
     let dir = install_dir();
-    status("Останавливаем запущенный Wraith…");
+    status(crate::tr!("Останавливаем запущенный Wraith…", "Stopping the running Wraith…"));
     kill_in_dir(&dir);
     crate::core::proxy::restore_leftover();
-    status("Копируем файлы…");
+    status(crate::tr!("Копируем файлы…", "Copying files…"));
     extract(payload, &dir, &|_, _| {})?;
     std::fs::write(dir.join("wraith.installed"), env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())?;
     let exe = dir.join("Wraith.exe");
-    status("Настраиваем запуск от администратора…");
+    status(crate::tr!("Настраиваем запуск от администратора…", "Setting up the elevated start…"));
     create_task(TASK, &exe, "", false)?;
     if options.autostart { create_task(TASK_AUTOSTART, &exe, "--tray", true)?; } else { delete_task(TASK_AUTOSTART); }
     crate::ui::set_autostart(false); // a Run entry from the portable version would start a second, unelevated copy
-    status("Создаём ярлыки…");
+    status(crate::tr!("Создаём ярлыки…", "Creating shortcuts…"));
     shortcut(&start_menu(), &exe);
     if options.desktop { shortcut(&desktop(), &exe); }
-    status("Регистрируем в «Установленных приложениях»…");
+    status(crate::tr!("Регистрируем в «Установленных приложениях»…", "Registering in Installed apps…"));
     register_uninstall(&dir)?;
     crate::store::update(|s| s.set("autostart", options.autostart.into()));
     Ok(exe)
@@ -172,7 +172,7 @@ fn message(text: &str, question: bool) -> bool {
 /// `Wraith.exe --uninstall` (from «Установленные приложения»).
 pub fn uninstall() {
     if !util::is_admin() { util::relaunch_elevated("--uninstall"); return; }
-    if !message("Удалить Wraith с этого компьютера?", true) { return; }
+    if !message(crate::tr!("Удалить Wraith с этого компьютера?", "Remove Wraith from this computer?"), true) { return; }
     let dir = util::app_dir();
     crate::store::init();
     crate::core::proxy::restore_leftover();
@@ -181,13 +181,13 @@ pub fn uninstall() {
     crate::ui::set_autostart(false);
     let _ = std::fs::remove_file(start_menu()); let _ = std::fs::remove_file(desktop());
     { use winreg::enums::HKEY_LOCAL_MACHINE; let _ = winreg::RegKey::predef(HKEY_LOCAL_MACHINE).delete_subkey_all(UNINSTALL_KEY); }
-    if message("Удалить и ваши серверы, подписки и настройки?\n\nНет — оставить их для повторной установки.", true) {
+    if message(crate::tr!("Удалить и ваши серверы, подписки и настройки?\n\nНет — оставить их для повторной установки.", "Also remove your servers, subscriptions and settings?\n\nNo keeps them for a reinstall."), true) {
         let _ = std::fs::remove_dir_all(crate::store::folder());
     }
     // The folder (with this exe) is removed by cmd after Wraith exits.
     let cmd = format!("/c ping -n 3 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.to_string_lossy());
     { use std::os::windows::process::CommandExt; let _ = std::process::Command::new("cmd.exe").creation_flags(util::CREATE_NO_WINDOW).current_dir(std::env::temp_dir()).raw_arg(&cmd).spawn(); }
-    message("Wraith удалён.", false);
+    message(crate::tr!("Wraith удалён.", "Wraith has been removed."), false);
 }
 
 /// At start of the installed, unelevated app: hand over to the elevated task. Returns true when handed over.
