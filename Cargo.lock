@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "wraith"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "base64",
  "eframe",

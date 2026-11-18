@@ -48,6 +48,8 @@ pub fn clean_old_files() {
     if let Ok(entries) = std::fs::read_dir(util::app_dir()) {
         for e in entries.flatten() { if e.path().extension().map(|x| x == "old").unwrap_or(false) { let _ = std::fs::remove_file(e.path()); } }
     }
+    // sing-box was removed in 0.12.0; its binary from older installs is no longer used.
+    if util::installed() { let _ = std::fs::remove_file(util::app_dir().join("sing-box.exe")); }
 }
 
 /// Wraith, Xray and sing-box processes started from `dir` (except this process).
@@ -190,9 +192,13 @@ pub fn uninstall() {
     message(crate::tr!("Wraith удалён.", "Wraith has been removed."), false);
 }
 
-/// At start of the installed, unelevated app: hand over to the elevated task. Returns true when handed over.
+/// At an unelevated start: the installed app hands over to its elevated task (no UAC prompt), any
+/// other copy asks for administrator rights through UAC. Returns true when another process took over;
+/// false when already elevated or the prompt was declined (Wraith then runs without TUN).
 pub fn elevate_via_task() -> bool {
-    if !util::installed() || util::is_admin() { return false; }
-    if run_task(TASK) { return true; }
-    util::relaunch_elevated("")
+    if util::is_admin() || std::env::args().any(|a| a == "--no-elevate") { return false; }
+    if util::installed() && run_task(TASK) { return true; }
+    // Arguments such as --tray or --connect carry over to the elevated copy.
+    let args: Vec<String> = std::env::args().skip(1).map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a }).collect();
+    util::relaunch_elevated(&format!("{} --no-elevate", args.join(" ")).trim_start())
 }

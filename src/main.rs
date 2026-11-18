@@ -26,7 +26,7 @@ fn main() -> eframe::Result<()> {
     let has = |a: &str| args.iter().any(|x| x == a);
     if cfg!(feature = "setup") { return setup::run(); }
     if has("--uninstall") { install::uninstall(); return Ok(()); }
-    // The installed app always runs elevated: an unelevated start hands over to the scheduled task.
+    // Wraith always tries to run elevated (TUN needs it): through the scheduled task when installed, UAC otherwise.
     if install::elevate_via_task() { return Ok(()); }
     let pending = store::folder().join("restart.pending");
     let wait = has("--elevated") || pending.exists(); let _ = std::fs::remove_file(&pending);

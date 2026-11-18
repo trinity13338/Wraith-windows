@@ -53,7 +53,7 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     }
 
     let client_inlets = client_inbound_tags(root.a("inbounds"));
-    root.insert("inbounds".into(), Value::Array(inbounds(settings, tun)?));
+    root.insert("inbounds".into(), Value::Array(inbounds(settings, tun, system_dns)?));
     let ours: Vec<&str> = if tun { vec!["tun-in", "socks", "http"] } else { vec!["socks", "http"] };
     if !client_inlets.is_empty() { remap_inbound_rules(&mut root, &client_inlets, &ours); }
     let app = ensure_app_outbounds(&mut root)?;
@@ -254,15 +254,19 @@ fn observatory_dns_ips(root: &Obj) -> Vec<String> {
     ips
 }
 
-pub fn inbounds(s: &Obj, tun: bool) -> Result<Vec<Value>, String> {
+pub fn inbounds(s: &Obj, tun: bool, system_dns: &[String]) -> Result<Vec<Value>, String> {
     let mut list = vec![];
     if tun {
         let mtu = s.i("mtu", 1500); if !(1280..=9000).contains(&mtu) { return Err(crate::tr!("MTU должен быть от 1280 до 9000.", "MTU must be between 1280 and 9000.").into()); }
         // Two halves of the address space beat the Ethernet default route whatever the interface metrics are.
-        let mut routes = vec!["0.0.0.0/1", "128.0.0.0/1"]; if crate::model::ip_mode(s) != "v4" { routes.push("::/1"); routes.push("8000::/1"); }
+        let mut routes: Vec<String> = vec!["0.0.0.0/1".into(), "128.0.0.0/1".into()]; if crate::model::ip_mode(s) != "v4" { routes.push("::/1".into()); routes.push("8000::/1".into()); }
+        // Windows asks the network's resolvers (usually the router, an on-link address) directly, past the
+        // tunnel. Host routes pull those queries into TUN, where the port-53 rule hands them to Xray's DNS.
+        for ip in system_dns { if routing::is_ip(ip) { routes.push(if ip.contains(':') { format!("{ip}/128") } else { format!("{ip}/32") }); } }
         list.push(json!({"tag": "tun-in", "protocol": "tun",
             "settings": {"name": "Wraith", "MTU": mtu, "autoSystemRoutingTable": routes, "autoOutboundsInterface": "auto"},
-            "sniffing": {"enabled": s.b("sniff", true), "routeOnly": true, "destOverride": ["http", "tls", "quic"]}}));
+            // The sniffed domain replaces the IP: an ISP resolver's answer for a blocked site is not used, the server resolves it.
+            "sniffing": {"enabled": s.b("sniff", true), "routeOnly": false, "destOverride": ["http", "tls", "quic"]}}));
     }
     let lan = s.b("allowLan", false); let listen = if lan { "0.0.0.0" } else { "127.0.0.1" };
     let sniff = json!({"enabled": s.b("sniff", true), "routeOnly": true, "destOverride": ["http", "tls"]});

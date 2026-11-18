@@ -280,3 +280,15 @@ fn insecure_links_and_wireguard_run_on_xray() {
     xray_accepts(&crate::xray::build(&state(json!({"tunnelMode": "tun"})), &wg, &[], 1).unwrap().config, "wireguard");
     assert!(importer::parse(r#"{"outbounds":[{"type":"vless","tag":"p","server":"x","server_port":1}]}"#).is_err());
 }
+
+#[test]
+fn tun_pulls_system_dns_into_the_tunnel() {
+    let p = profile(BALANCER);
+    let dns: Vec<String> = vec!["192.168.1.138".into(), "fde4:fdad:f8bd::138".into()];
+    let c = crate::xray::build(&state(json!({"tunnelMode": "both"})), &p, &dns, 1).unwrap().config;
+    let tun = c.a("inbounds").unwrap().iter().find(|i| i["tag"] == "tun-in").unwrap().clone();
+    let routes = tun["settings"]["autoSystemRoutingTable"].as_array().unwrap();
+    assert!(routes.contains(&json!("192.168.1.138/32")) && routes.contains(&json!("fde4:fdad:f8bd::138/128")) && routes.contains(&json!("0.0.0.0/1")));
+    assert_eq!(tun["sniffing"]["routeOnly"], json!(false));
+    xray_accepts(&c, "tun-dns-routes");
+}
