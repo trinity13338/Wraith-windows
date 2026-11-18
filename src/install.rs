@@ -192,12 +192,11 @@ pub fn uninstall() {
     message(crate::tr!("Wraith удалён.", "Wraith has been removed."), false);
 }
 
-/// At an unelevated start: the installed app hands over to its elevated task (no UAC prompt), any
-/// other copy asks for administrator rights through UAC. Returns true when another process took over;
+/// At an unelevated start Wraith asks for administrator rights through UAC (the logon task and the
+/// post-update restart already start it elevated). Returns true when the elevated copy took over;
 /// false when already elevated or the prompt was declined (Wraith then runs without TUN).
 pub fn elevate_via_task() -> bool {
     if util::is_admin() || std::env::args().any(|a| a == "--no-elevate") { return false; }
-    if util::installed() && run_task(TASK) { return true; }
     // Arguments such as --tray or --connect carry over to the elevated copy.
     let args: Vec<String> = std::env::args().skip(1).map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a }).collect();
     util::relaunch_elevated(&format!("{} --no-elevate", args.join(" ")).trim_start())

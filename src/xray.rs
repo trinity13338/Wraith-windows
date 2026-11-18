@@ -318,8 +318,7 @@ fn dns(state: &AppState, p: &Profile, system_dns: &[String]) -> Obj {
     let s = &state.settings;
     let mut value = routing::custom_dns(s);
     if value.is_empty() && s.b("dnsFromJson", false) { value = routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote"); }
-    let mut servers: Vec<Value> = if !value.is_empty() { vec![value.into()] } else { system_dns.iter().map(|ip| ip.clone().into()).collect() };
-    if servers.is_empty() { servers.push(routing::DEFAULT_CUSTOM.into()); }
+    let mut servers: Vec<Value> = if !value.is_empty() { vec![value.clone().into()] } else { system_dns.iter().map(|ip| ip.clone().into()).collect() };    if servers.is_empty() { servers.push(routing::DEFAULT_CUSTOM.into()); }
     obj! {"servers" => servers, "queryStrategy" => match crate::model::ip_mode(s).as_str() { "v4" => "UseIPv4", "v6" => "UseIPv6", _ => "UseIP" }}
 }
 

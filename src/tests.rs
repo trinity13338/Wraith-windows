@@ -292,3 +292,14 @@ fn tun_pulls_system_dns_into_the_tunnel() {
     assert_eq!(tun["sniffing"]["routeOnly"], json!(false));
     xray_accepts(&c, "tun-dns-routes");
 }
+
+/// Debug: builds the config of the real selected server from this machine's state (WRAITH_DUMP=path).
+#[test]
+#[ignore]
+fn dump_real_config() {
+    let Ok(out) = std::env::var("WRAITH_DUMP") else { return };
+    let st = crate::store::load();
+    let p = st.selected().cloned().expect("selected");
+    let built = crate::xray::build(&st, &p, &crate::routing::system_resolvers(), 1).unwrap();
+    std::fs::write(out, serde_json::to_vec_pretty(&built.config).unwrap()).unwrap();
+}
