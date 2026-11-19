@@ -3508,13 +3508,14 @@ dependencies = [
 
 [[package]]
 name = "wraith"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "base64",
  "eframe",
  "egui",
  "getrandom 0.2.17",
  "idna",
+ "png 0.17.16",
  "regex",
  "rustls",
  "serde",

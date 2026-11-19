@@ -422,8 +422,13 @@ impl App {
         let fill = if selected { p.secondary_container } else if response.hovered() { p.high } else { Color32::TRANSPARENT };
         ui.painter().rect_filled(rect, CornerRadius::same(16), fill);
         let badge = egui::Rect::from_center_size(egui::pos2(rect.left() + 34.0, rect.center().y), Vec2::splat(40.0));
-        ui.painter().circle_filled(badge.center(), 20.0, if live { p.primary } else if selected { p.primary_container } else { p.highest });
-        ui.painter().text(badge.center(), Align2::CENTER_CENTER, w::badge_text(&pr.name), FontId::new(13.0, semibold()), if live { p.on_primary } else if selected { p.on_primary_container } else { p.text });
+        // A flag in the name fills the badge; the connected server gets a primary ring around it.
+        let ring = if live { Stroke::new(2.5, p.primary) } else if selected { Stroke::new(2.0, p.primary_container) } else { Stroke::new(1.0, p.outline_variant) };
+        let flag = super::flags::flag_code(&pr.name).is_some_and(|code| super::flags::paint(ui.painter(), &code, badge.center(), 20.0, Some(ring)));
+        if !flag {
+            ui.painter().circle_filled(badge.center(), 20.0, if live { p.primary } else if selected { p.primary_container } else { p.highest });
+            ui.painter().text(badge.center(), Align2::CENTER_CENTER, w::badge_text(&pr.name), FontId::new(13.0, semibold()), if live { p.on_primary } else if selected { p.on_primary_container } else { p.text });
+        }
         // Latency chip on the right.
         let (chip_text, chip_color) = if pinging { ("…".to_string(), p.muted) } else if pr.latency > 0 { (crate::trf!("{} мс", "{} ms", pr.latency), if pr.latency < 300 { p.good } else if pr.latency < 800 { p.warn } else { p.error }) } else if !pr.ping_error.is_empty() { (crate::pinger::short_error(&pr.ping_error).chars().take(22).collect(), p.error) } else { (String::new(), p.muted) };
         let mut right = rect.right() - 14.0;

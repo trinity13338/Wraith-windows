@@ -181,6 +181,8 @@ pub fn badge_text(name: &str) -> String {
             return [a, b].iter().map(|c| char::from_u32(c - 0x1F1E6 + 'A' as u32).unwrap_or('?')).collect();
         }
     }
+    // Any other first emoji is shown as it is (egui's emoji font draws it).
+    if let Some(e) = chars.iter().find(|c| { let u = **c as u32; (0x1F300..=0x1FAFF).contains(&u) || (0x2600..=0x27BF).contains(&u) }) { return e.to_string(); }
     let clean: String = name.chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
     let mut words = clean.split_whitespace();
     let first = words.next().and_then(|w| w.chars().next());

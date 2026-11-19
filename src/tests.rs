@@ -303,3 +303,13 @@ fn dump_real_config() {
     let built = crate::xray::build(&st, &p, &crate::routing::system_resolvers(), 1).unwrap();
     std::fs::write(out, serde_json::to_vec_pretty(&built.config).unwrap()).unwrap();
 }
+
+#[test]
+fn flag_badges_find_the_flag_and_have_images() {
+    assert_eq!(crate::ui::flags::flag_code("🇱🇹 Lithuania").as_deref(), Some("lt"));
+    assert_eq!(crate::ui::flags::flag_code("Finland 🇫🇮 #2").as_deref(), Some("fi"));
+    assert_eq!(crate::ui::flags::flag_code("Lithuania"), None);
+    assert_eq!(crate::ui::widgets::badge_text("Fast 🔥 server"), "🔥");
+    let codes = include_str!("../assets/flags.txt");
+    for c in ["lt", "fi", "se", "de", "nl", "us", "gb", "ru", "jp"] { assert!(codes.lines().any(|l| l == c), "{c}"); }
+}

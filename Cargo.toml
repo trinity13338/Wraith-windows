@@ -1,6 +1,6 @@
 [package]
 name = "wraith"
-version = "0.12.2"
+version = "0.12.3"
 edition = "2021"
 description = "Wraith VPN client for Windows (Xray)"
 license = "GPL-3.0-or-later"
@@ -25,6 +25,7 @@ url = "2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "0.26"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+png = "0.17"
 
 winreg = "0.55"
 tray-icon = "0.21"

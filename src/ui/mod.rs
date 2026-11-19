@@ -1,6 +1,7 @@
 //! Window handling (show/hide from the tray, dark title bar), tray icon and autostart.
 
 pub mod app;
+pub mod flags;
 pub mod icon;
 pub mod theme;
 pub mod widgets;
