@@ -117,6 +117,8 @@ impl App {
         if targets.is_empty() { return; }
         let cancel = Arc::new(AtomicBool::new(false)); self.ping_cancel = Some(cancel.clone());
         { let mut s = self.shared.lock().unwrap(); for p in &targets { s.pinging.insert(p.id.clone()); } }
+        // A new check of several servers starts from the provider's order: old results are dropped.
+        if targets.len() > 1 { store::update(|s| for p in s.profiles.iter_mut().filter(|p| targets.iter().any(|t| t.id == p.id)) { p.latency = 0; p.ping_error.clear(); }); }
         let shared = self.shared.clone();
         let report: crate::pinger::Report = Arc::new(move |id: &str, ms: i64, err: String| {
             { let mut s = store::get(); if let Some(p) = s.profiles.iter_mut().find(|p| p.id == id) { p.latency = ms; p.ping_error = if ms > 0 { String::new() } else { err }; } }

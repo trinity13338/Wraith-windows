@@ -116,14 +116,15 @@ fn from_legacy(raw: &Obj) -> AppState {
     state
 }
 
-/// Replace one subscription's servers, keeping favorites, latencies and the selection by name/host.
+/// Replace one subscription's servers in the provider's order, keeping favorites and the selection by name/host.
 pub fn replace_subscription(sub: Subscription, mut fresh: Vec<Profile>) {
     update(|s| {
         let old: Vec<Profile> = s.profiles.iter().filter(|p| p.group == sub.id).cloned().collect();
         let selected_key = s.selected().filter(|p| p.group == sub.id).map(|p| p.key());
         for p in fresh.iter_mut() {
             p.group = sub.id.clone();
-            if let Some(prev) = old.iter().find(|o| o.key() == p.key()) { p.id = prev.id.clone(); p.favorite = prev.favorite; p.latency = prev.latency; p.ping_error = prev.ping_error.clone(); }
+            // Old latencies are dropped: a refreshed subscription shows the provider's order until it is pinged again.
+            if let Some(prev) = old.iter().find(|o| o.key() == p.key()) { p.id = prev.id.clone(); p.favorite = prev.favorite; }
         }
         let at = s.profiles.iter().position(|p| p.group == sub.id).unwrap_or(s.profiles.len());
         s.profiles.retain(|p| p.group != sub.id);
