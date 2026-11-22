@@ -37,9 +37,14 @@ pub fn find_window(pid: u32) -> isize {
 pub fn window_ready(start_hidden: bool) {
     let h = find_window(std::process::id()); if h == 0 { return; }
     HWND.store(h, Ordering::Relaxed);
-    let dark: i32 = if theme::palette(&crate::store::get().s("theme")).dark { 1 } else { 0 };
-    unsafe { windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(h as _, 20, &dark as *const i32 as *const _, 4) };
+    set_dark_title_bar(theme::is_dark(&crate::store::get().s("theme")));
     if start_hidden && tray_available() { hide_window(); }
+}
+/// Dark or light window frame, following the app theme.
+pub fn set_dark_title_bar(dark: bool) {
+    let h = HWND.load(Ordering::Relaxed); if h == 0 { return; }
+    let dark: i32 = dark as i32;
+    unsafe { windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(h as _, 20, &dark as *const i32 as *const _, 4) };
 }
 pub fn hide_window() {
     let h = HWND.load(Ordering::Relaxed);

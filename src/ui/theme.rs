@@ -44,8 +44,82 @@ pub fn system_dark() -> bool {
         .and_then(|k| k.get_value::<u32, _>("AppsUseLightTheme")).map(|v| v == 0).unwrap_or(true)
 }
 
-pub fn palette(theme: &str) -> Palette {
-    match theme { "light" => LIGHT, "dark" => DARK, _ => if system_dark() { DARK } else { LIGHT } }
+/// The Windows accent colour (Settings → Personalisation → Colours). The DWORD is 0xAABBGGRR.
+pub fn windows_accent() -> Option<Color32> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    let v = winreg::RegKey::predef(HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\DWM").and_then(|k| k.get_value::<u32, _>("AccentColor")).ok()?;
+    Some(Color32::from_rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))
+}
+
+pub fn is_dark(theme: &str) -> bool { match theme { "light" => false, "dark" => true, _ => system_dark() } }
+
+/// Everything the palette depends on; the app rebuilds its colours when this changes.
+pub fn signature(theme: &str, accent: bool) -> String {
+    format!("{theme}|{}|{:?}", is_dark(theme), if accent { windows_accent() } else { None })
+}
+
+pub fn palette(theme: &str, accent: bool) -> Palette {
+    let dark = is_dark(theme);
+    match if accent { windows_accent() } else { None } { Some(seed) => from_seed(seed, dark), None => if dark { DARK } else { LIGHT } }
+}
+
+// ---- Material-style tonal palette from one seed colour, computed in OKLCH.
+
+fn srgb_to_linear(c: u8) -> f32 { let c = c as f32 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } }
+fn linear_to_srgb(c: f32) -> f32 { if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 } }
+
+fn to_oklch(c: Color32) -> (f32, f32, f32) {
+    let (r, g, b) = (srgb_to_linear(c.r()), srgb_to_linear(c.g()), srgb_to_linear(c.b()));
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+    let (ll, a, bb) = (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
+    (ll, (a * a + bb * bb).sqrt(), bb.atan2(a))
+}
+
+/// Linear sRGB of an OKLCH colour, or None when it is outside the sRGB gamut.
+fn oklch_linear(l: f32, c: f32, h: f32) -> Option<[f32; 3]> {
+    let (a, b) = (c * h.cos(), c * h.sin());
+    let l_ = (l + 0.3963377774 * a + 0.2158037573 * b).powi(3);
+    let m_ = (l - 0.1055613458 * a - 0.0638541728 * b).powi(3);
+    let s_ = (l - 0.0894841775 * a - 1.2914855480 * b).powi(3);
+    let rgb = [4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_, -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_, -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_];
+    rgb.iter().all(|v| (-0.0001..=1.0001).contains(v)).then_some(rgb)
+}
+
+/// A colour of Material tone `tone` (CIE L*, 0 black … 100 white) with the given hue, at the
+/// requested chroma or the highest one sRGB can show at that tone.
+fn tone(tone: f32, chroma: f32, hue: f32) -> Color32 {
+    let t = tone.clamp(0.0, 100.0);
+    let y = if t > 8.0 { ((t + 16.0) / 116.0).powi(3) } else { t / 903.3 };
+    let l = y.cbrt();
+    let (mut lo, mut hi) = (0.0f32, chroma);
+    if oklch_linear(l, hi, hue).is_none() { for _ in 0..20 { let mid = (lo + hi) / 2.0; if oklch_linear(l, mid, hue).is_some() { lo = mid } else { hi = mid } } } else { lo = hi; }
+    let rgb = oklch_linear(l, lo, hue).unwrap_or([y, y, y]);
+    let u = |v: f32| (linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8;
+    Color32::from_rgb(u(rgb[0]), u(rgb[1]), u(rgb[2]))
+}
+
+/// Palette in the roles of Material 3 "tonal spot", seeded with the Windows accent colour.
+pub fn from_seed(seed: Color32, dark: bool) -> Palette {
+    let (_, c, h) = to_oklch(seed);
+    let primary = c.clamp(0.0, 0.16);
+    let (secondary, tertiary, neutral, variant) = (primary * 0.33, (primary * 0.5).max(0.03), (primary * 0.08).min(0.012), (primary * 0.16).min(0.024));
+    let th = h + 60f32.to_radians();
+    let p = |t: f32| tone(t, primary, h); let s = |t: f32| tone(t, secondary, h); let t3 = |t: f32| tone(t, tertiary, th);
+    let n = |t: f32| tone(t, neutral, h); let nv = |t: f32| tone(t, variant, h);
+    let base = if dark { DARK } else { LIGHT };
+    if dark {
+        Palette { dark, primary: p(80.0), on_primary: p(20.0), primary_container: p(30.0), on_primary_container: p(90.0),
+            secondary_container: s(30.0), on_secondary_container: s(90.0), tertiary: t3(80.0), tertiary_container: t3(30.0),
+            surface: n(6.0), text: n(90.0), muted: nv(80.0), outline: nv(60.0), outline_variant: nv(30.0),
+            lowest: n(4.0), low: n(10.0), container: n(12.0), high: n(17.0), highest: n(22.0), ..base }
+    } else {
+        Palette { dark, primary: p(40.0), on_primary: p(100.0), primary_container: p(90.0), on_primary_container: p(10.0),
+            secondary_container: s(90.0), on_secondary_container: s(10.0), tertiary: t3(40.0), tertiary_container: t3(90.0),
+            surface: n(98.0), text: n(10.0), muted: nv(30.0), outline: nv(50.0), outline_variant: nv(80.0),
+            lowest: n(100.0), low: n(96.0), container: n(94.0), high: n(92.0), highest: n(90.0), ..base }
+    }
 }
 
 pub fn apply(ctx: &egui::Context, p: &Palette) {

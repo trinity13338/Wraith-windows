@@ -313,3 +313,29 @@ fn flag_badges_find_the_flag_and_have_images() {
     let codes = include_str!("../assets/flags.txt");
     for c in ["lt", "fi", "se", "de", "nl", "us", "gb", "ru", "jp"] { assert!(codes.lines().any(|l| l == c), "{c}"); }
 }
+
+#[test]
+fn accent_palette_follows_the_seed_and_keeps_contrast() {
+    use crate::ui::theme::from_seed;
+    let blue = egui::Color32::from_rgb(0x00, 0x78, 0xD4);
+    let (light, dark) = (from_seed(blue, false), from_seed(blue, true));
+    assert!(light.primary.b() > light.primary.r() && dark.primary.b() > dark.primary.r(), "blue seed gives a blue primary");
+    let lum = |c: egui::Color32| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
+    assert!(lum(light.surface) > 230.0 && lum(light.text) < 50.0);
+    assert!(lum(dark.surface) < 30.0 && lum(dark.text) > 200.0);
+    let grey = from_seed(egui::Color32::from_rgb(0x4C, 0x4A, 0x48), true);
+    assert!((grey.primary.r() as i32 - grey.primary.b() as i32).abs() < 30, "a grey accent stays nearly grey");
+}
+
+#[test]
+fn server_configuration_view_has_no_wraith_parts() {
+    // A provider document is shown exactly as it came.
+    let p = profile(BALANCER);
+    assert_eq!(serde_json::to_value(crate::xray::source(&p).unwrap()).unwrap(), serde_json::from_str::<serde_json::Value>(BALANCER).unwrap());
+    // A link becomes only its outbound.
+    let link = profile("vless://00948d0e-1437-0005-abfe-bb90bf6bc89a@example.com:443?type=tcp&security=reality&pbk=key&sid=ab&sni=example.com#x");
+    let c = crate::xray::source(&link).unwrap();
+    assert_eq!(c.keys().collect::<Vec<_>>(), vec!["outbounds"]);
+    let text = serde_json::to_string(&c).unwrap();
+    assert!(!text.contains("tun-in") && !text.contains("wraith-dns") && !text.contains("inbounds"));
+}

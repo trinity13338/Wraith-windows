@@ -40,7 +40,7 @@ struct Shared {
 }
 
 pub struct App {
-    pal: Palette, theme_key: String,
+    pal: Palette, theme_key: String, theme_checked: Instant,
     page: Page, search: String,
     modal: Option<Modal>,
     shared: Arc<Mutex<Shared>>,
@@ -54,13 +54,14 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, start_hidden: bool, connect: bool) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        let theme_key = store::get().s("theme");
-        let pal = theme::palette(&theme_key);
+        let (theme, accent) = { let s = store::get(); (s.s("theme"), s.b("windowsAccent")) };
+        let theme_key = theme::signature(&theme, accent);
+        let pal = theme::palette(&theme, accent);
         theme::apply(&cc.egui_ctx, &pal);
         super::set_context(cc.egui_ctx.clone());
         let tray = super::tray::create();
         let page = match std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from)).as_deref() { Some("settings") => Page::Settings, Some("logs") => Page::Logs, _ => Page::Home };
-        let app = App { pal, theme_key, page, search: String::new(), modal: None, shared: Arc::new(Mutex::new(Shared::default())), ping_cancel: None, profiles: vec![], subs: vec![], revision: u64::MAX, log_cache: (u64::MAX, String::new()), start_hidden, frames: 0, _tray: tray };
+        let app = App { pal, theme_key, theme_checked: Instant::now(), page, search: String::new(), modal: None, shared: Arc::new(Mutex::new(Shared::default())), ping_cancel: None, profiles: vec![], subs: vec![], revision: u64::MAX, log_cache: (u64::MAX, String::new()), start_hidden, frames: 0, _tray: tray };
         let (update_on_open, check_updates, connect_on_start) = { let s = store::get(); (s.b("updateOnOpen"), s.b("checkUpdates"), s.b("connectOnStart")) };
         if update_on_open { app.background(crate::tr!("Обновляем подписки…", "Updating subscriptions…"), || { crate::subs::update_all(true); Ok(crate::tr!("Подписки обновлены", "Subscriptions updated").into()) }); }
         if check_updates { let shared = app.shared.clone(); std::thread::spawn(move || if let Ok(r) = updater::check() { if r.available { shared.lock().unwrap().release = Some(r); super::repaint(); } }); }
@@ -85,8 +86,17 @@ impl App {
         if rev == self.revision { return; }
         self.revision = rev;
         let s = store::get(); self.profiles = s.profiles.clone(); self.subs = s.subscriptions.clone();
-        let key = s.s("theme"); drop(s);
-        if key != self.theme_key { self.theme_key = key; self.pal = theme::palette(&self.theme_key); if let Some(ctx) = super::context() { theme::apply(&ctx, &self.pal); } }
+        drop(s);
+        self.refresh_theme();
+    }
+    /// Rebuilds the colours when the theme setting, the Windows light/dark mode or the accent changes.
+    fn refresh_theme(&mut self) {
+        let (theme, accent) = { let s = store::get(); (s.s("theme"), s.b("windowsAccent")) };
+        let key = theme::signature(&theme, accent);
+        if key == self.theme_key { return; }
+        self.theme_key = key; self.pal = theme::palette(&theme, accent);
+        if let Some(ctx) = super::context() { theme::apply(&ctx, &self.pal); }
+        super::set_dark_title_bar(self.pal.dark);
     }
 
     // ------------------------------------------------------------------ actions
@@ -150,12 +160,11 @@ impl App {
         }
     }
 
+    /// The server's own configuration as the provider sent it (a link as its Xray outbound), without
+    /// the inbounds, DNS, routing and other parts Wraith adds when it starts the core.
     fn show_config(&mut self, p: &Profile) {
-        let state = store::get().clone();
-        let dns = crate::routing::system_resolvers();
-        let result = crate::xray::build(&state, p, &dns, 0).map(|b| b.config);
-        self.modal = Some(match result {
-            Ok(c) => Modal::Info { title: crate::tr!("Конфигурация Xray", "Xray configuration").into(), text: serde_json::to_string_pretty(&c).unwrap_or_default(), copy: true },
+        self.modal = Some(match crate::xray::source(p) {
+            Ok(c) => Modal::Info { title: crate::tr!("Конфигурация сервера", "Server configuration").into(), text: serde_json::to_string_pretty(&c).unwrap_or_default(), copy: true },
             Err(e) => Modal::Info { title: crate::tr!("Конфигурация не собрана", "The configuration could not be built").into(), text: e, copy: false },
         });
     }
@@ -533,6 +542,7 @@ impl App {
                     w::section_title(ui, &p, crate::tr!("Приложение", "App"));
                     w::group(ui, &p, |ui| {
                         self.pick_row(ui, crate::tr!("Тема", "Theme"), "", "theme", &[("system", crate::tr!("Как в Windows", "As in Windows")), ("light", crate::tr!("Светлая", "Light")), ("dark", crate::tr!("Тёмная", "Dark"))]);
+                        self.bool_row(ui, crate::tr!("Цвет акцента Windows", "Windows accent colour"), "", "windowsAccent");
                         let mut autostart = store::get().b("autostart");
                         if w::switch_row(ui, &p, crate::tr!("Запускать вместе с Windows", "Start with Windows"), "", &mut autostart) { match crate::install::set_autostart(autostart) { Ok(()) => store::update(|s| s.set("autostart", autostart.into())), Err(e) => self.toast(e) } }
                         self.bool_row(ui, crate::tr!("Подключаться при запуске", "Connect on start"), "", "connectOnStart");
@@ -836,6 +846,9 @@ fn truncate(ui: &Ui, _probe: Arc<egui::Galley>, text: &str, font: FontId, color:
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frames += 1;
+        // Windows sends no repaint when its colours change: look every two seconds.
+        if self.theme_checked.elapsed() >= std::time::Duration::from_secs(2) { self.theme_checked = Instant::now(); self.refresh_theme(); }
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
         if self.frames == 2 { super::window_ready(self.start_hidden); }
         self.refresh_cache();
         if ctx.input(|i| i.viewport().close_requested()) {

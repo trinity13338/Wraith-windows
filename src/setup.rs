@@ -22,7 +22,7 @@ pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_title(crate::tr!("Установка Wraith", "Install Wraith")).with_inner_size([560.0, 440.0]).with_resizable(false).with_icon(Arc::new(icon)), centered: true, ..Default::default() };
     eframe::run_native(crate::tr!("Установка Wraith", "Install Wraith"), options, Box::new(|cc| {
         theme::install_fonts(&cc.egui_ctx);
-        let pal = theme::palette("system"); theme::apply(&cc.egui_ctx, &pal);
+        let pal = theme::palette("system", true); theme::apply(&cc.egui_ctx, &pal);
         Ok(Box::new(Setup { pal, autostart: true, desktop: true, step: Arc::new(Mutex::new(Step::Ready)) }))
     }))
 }

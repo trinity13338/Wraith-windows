@@ -135,7 +135,7 @@ pub fn defaults() -> Obj {
         // Subscriptions
         "updateOnOpen": false, "userAgent": "", "sendHwid": true, "hwid": "", "clientNumericId": "",
         // App
-        "theme": "system", "minimizeToTray": true, "autostart": false, "connectOnStart": false, "checkUpdates": true, "debugLogs": false
+        "theme": "system", "windowsAccent": true, "minimizeToTray": true, "autostart": false, "connectOnStart": false, "checkUpdates": true, "debugLogs": false
     });
     v.as_object().unwrap().clone()
 }
