@@ -1,0 +1,90 @@
+# Builds the Windows release files (Wraith-Windows-<version>-x64.zip and Wraith-Setup-<version>-x64.exe)
+# on a Windows runner and keeps them as a workflow artifact; the release itself is published by hand.
+# The Xray core, Wintun and the geo files are taken from an earlier release whose SHA256SUMS.txt
+# lists the archive, so only Wraith.exe changes.
+name: Build Windows release files
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Earlier release tag to take xray.exe, wintun.dll and the geo files from"
+        required: true
+        default: "v0.12.5"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Tests
+        run: cargo test
+
+      - name: Screens without a window
+        run: |
+          $env:WRAITH_SHOTS = "$PWD\shots"
+          New-Item -ItemType Directory -Force shots | Out-Null
+          cargo test --release -- --ignored --test-threads=1 render_screens
+
+      - name: Core and Wintun from ${{ inputs.base }}
+        run: |
+          gh release download "${{ inputs.base }}" -R "${{ github.repository }}" -D base -p "Wraith-Windows-*-x64.zip" -p SHA256SUMS.txt
+          $zip = Get-ChildItem base -Filter "Wraith-Windows-*-x64.zip" | Select-Object -First 1
+          $want = (Select-String -Path base\SHA256SUMS.txt -Pattern ([regex]::Escape($zip.Name))).Line.Split(" ")[0].ToLower()
+          $have = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $have) { throw "SHA-256 mismatch for $($zip.Name)" }
+          Expand-Archive $zip.FullName -DestinationPath base\x
+
+      - name: Wraith.exe and the archive
+        run: |
+          cargo build --release
+          $name = "Wraith-Windows-${{ steps.v.outputs.version }}-x64"
+          $src = (Get-ChildItem base\x -Directory | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force "out\$name" | Out-Null
+          foreach ($f in "xray.exe", "wintun.dll", "geoip.dat", "geosite.dat", "LICENSE-Xray.txt", "LICENSE-Wintun.txt", "README.txt") { Copy-Item "$src\$f" "out\$name\" }
+          Copy-Item target\release\Wraith.exe "out\$name\"
+          Copy-Item LICENSE "out\$name\LICENSE.txt"
+          Copy-Item assets\LICENSE-flag-icons.txt "out\$name\"
+          Compress-Archive -Path "out\$name" -DestinationPath "out\$name.zip"
+
+      - name: Installer
+        run: |
+          $env:WRAITH_PAYLOAD = "$PWD\out\Wraith-Windows-${{ steps.v.outputs.version }}-x64.zip"
+          cargo build --release --features setup --target-dir target/setup
+          Copy-Item target\setup\release\Wraith.exe "out\Wraith-Setup-${{ steps.v.outputs.version }}-x64.exe"
+
+      - name: Checksums
+        run: |
+          Set-Location out
+          Get-ChildItem -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.Name -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wraith-windows-${{ steps.v.outputs.version }}
+          path: |
+            out/*.zip
+            out/*.exe
+            out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens-${{ steps.v.outputs.version }}
+          path: shots/*.png
+          if-no-files-found: ignore
