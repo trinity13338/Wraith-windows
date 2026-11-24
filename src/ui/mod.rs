@@ -1,8 +1,10 @@
 //! Window handling (show/hide from the tray, dark title bar), tray icon and autostart.
 
 pub mod app;
+pub mod backdrop;
 pub mod flags;
 pub mod icon;
+pub mod icons;
 pub mod theme;
 pub mod widgets;
 
@@ -37,7 +39,8 @@ pub fn find_window(pid: u32) -> isize {
 pub fn window_ready(start_hidden: bool) {
     let h = find_window(std::process::id()); if h == 0 { return; }
     HWND.store(h, Ordering::Relaxed);
-    set_dark_title_bar(theme::is_dark(&crate::store::get().s("theme")));
+    // The app is dark (as on Android): the frame follows.
+    set_dark_title_bar(true);
     if start_hidden && tray_available() { hide_window(); }
 }
 /// Dark or light window frame, following the app theme.

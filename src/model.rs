@@ -133,9 +133,12 @@ pub fn defaults() -> Obj {
         // Latency checks
         "pingType": "proxyGet", "pingUrl": "https://www.gstatic.com/generate_204", "pingTimeout": 5000, "pingMode": "keepalive", "sort": "none",
         // Subscriptions
-        "updateOnOpen": false, "userAgent": "", "sendHwid": true, "hwid": "", "clientNumericId": "",
+        "updateOnOpen": false, "autoUpdate": true, "userAgent": "", "sendHwid": true, "hwid": "", "clientNumericId": "",
         // App
-        "theme": "system", "windowsAccent": true, "minimizeToTray": true, "autostart": false, "connectOnStart": false, "checkUpdates": true, "debugLogs": false
+        "theme": "dark", "minimizeToTray": true, "autostart": false, "connectOnStart": false, "checkUpdates": true, "debugLogs": false,
+        "pingOnOpen": false, "quic": "allow",
+        // Appearance (as on Android): accent, own photo with blur/dimming, greeting, exit IP on the home screen.
+        "accent": "sakura", "amoled": false, "bgBlur": 0.0, "bgDim": 0.35, "greetName": "", "showExitIp": true
     });
     v.as_object().unwrap().clone()
 }

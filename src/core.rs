@@ -155,6 +155,11 @@ fn monitor(session: u64) {
             let mut s = STATUS.lock().unwrap();
             s.rx_rate = (down - s.rx).max(0); s.tx_rate = (up - s.tx).max(0); s.rx = down; s.tx = up;
         }
+        // Local statistics (speed chart, daily totals) and the exit IP, also while the window is in the tray.
+        let (rx_rate, tx_rate) = { let s = STATUS.lock().unwrap(); (s.rx_rate, s.tx_rate) };
+        crate::stats::sample(rx_rate, tx_rate);
+        let settings = crate::store::get().settings.clone();
+        crate::stats::tick_exit(&settings);
     }
 }
 
@@ -173,7 +178,8 @@ fn stop_running(quiet: bool) {
     if r.proxy_mode { if let Err(e) = proxy::restore() { crate::log::add(crate::trf!("Не удалось вернуть настройки прокси Windows: {e}", "Could not restore the Windows proxy settings: {e}")); } }
     { let mut c = r.child.lock().unwrap(); let _ = c.kill(); let _ = c.wait(); }
     if !quiet { crate::log::add(crate::tr!("Wraith: отключено", "Wraith: disconnected")); }
-    let mut s = STATUS.lock().unwrap(); s.rx_rate = 0; s.tx_rate = 0;
+    { let mut s = STATUS.lock().unwrap(); s.rx_rate = 0; s.tx_rate = 0; }
+    crate::stats::session_ended(); crate::stats::reset_exit();
 }
 
 /// A core left running by a crashed Wraith keeps the TUN and the ports busy.
@@ -249,4 +255,11 @@ pub mod proxy {
         use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
         unsafe { InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null(), 0); InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_REFRESH, std::ptr::null(), 0); }
     }
+}
+
+/// Tests: draw the connected screens without a core.
+#[cfg(test)]
+pub fn set_test_status(state: State, name: &str, rx_rate: i64, tx_rate: i64) {
+    let mut s = STATUS.lock().unwrap();
+    *s = Status { state, error: String::new(), profile_id: String::new(), profile_name: name.into(), engine: "Xray", tun: true, since: Some(Instant::now() - Duration::from_secs(3725)), rx: 734_003_200, tx: 52_428_800, rx_rate, tx_rate };
 }

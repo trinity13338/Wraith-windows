@@ -10,6 +10,7 @@ static STATE: OnceLock<Mutex<AppState>> = OnceLock::new();
 static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn folder() -> PathBuf {
+    if let Some(dir) = std::env::var_os("WRAITH_HOME").map(PathBuf::from).filter(|p| p.is_absolute()) { return dir; }
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     base.join("Wraith")
 }
@@ -45,6 +46,9 @@ pub fn init() {
 pub fn get() -> MutexGuard<'static, AppState> { STATE.get().expect("store").lock().unwrap_or_else(|e| e.into_inner()) }
 /// Changes on every save, so views can refresh cached data.
 pub fn revision() -> u64 { REVISION.load(std::sync::atomic::Ordering::Relaxed) }
+
+/// A setting when the store is loaded (the installer may run before it), else "".
+pub fn try_setting(key: &str) -> String { STATE.get().map(|m| m.lock().unwrap_or_else(|e| e.into_inner()).s(key)).unwrap_or_default() }
 
 pub fn update<R>(f: impl FnOnce(&mut AppState) -> R) -> R {
     let r = { let mut s = get(); f(&mut s) };
@@ -153,4 +157,28 @@ fn protect(data: &[u8], encrypt: bool) -> Result<Vec<u8>, String> {
     let result = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec() };
     unsafe { LocalFree(out.pbData as _) };
     Ok(result)
+}
+
+/// Servers, subscriptions, rules and settings as plain JSON (contains connection keys).
+pub fn backup() -> String {
+    let mut v = serde_json::to_value(&*get()).unwrap_or_default();
+    if let Some(s) = v.get_mut("settings").and_then(|s| s.as_object_mut()) { s.remove("hwid"); }
+    if let Some(o) = v.as_object_mut() { o.insert("wraithBackup".into(), 1.into()); }
+    serde_json::to_string_pretty(&v).unwrap_or_default()
+}
+
+/// Replaces everything with a backup; the installation id stays this computer's.
+pub fn restore(text: &str) -> Result<(), String> {
+    let v: serde_json::Value = serde_json::from_str(text.trim()).map_err(|_| crate::tr!("Это не резервная копия Wraith (JSON не читается).", "This is not a Wraith backup (unreadable JSON).").to_string())?;
+    if v.get("profiles").and_then(|p| p.as_array()).is_none() || v.get("settings").and_then(|s| s.as_object()).is_none() {
+        return Err(crate::tr!("Это не резервная копия Wraith.", "This is not a Wraith backup.").into());
+    }
+    let mut state: AppState = serde_json::from_value(v).map_err(|e| e.to_string())?;
+    let hwid = get().s("hwid");
+    state.set("hwid", hwid.into());
+    for (k, v) in crate::model::defaults() { state.settings.entry(k).or_insert(v); }
+    if state.selected().is_none() { state.selected = state.profiles.first().map(|p| p.id.clone()).unwrap_or_default(); }
+    *get() = state;
+    save();
+    Ok(())
 }

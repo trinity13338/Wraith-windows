@@ -315,16 +315,14 @@ fn flag_badges_find_the_flag_and_have_images() {
 }
 
 #[test]
-fn accent_palette_follows_the_seed_and_keeps_contrast() {
-    use crate::ui::theme::from_seed;
+fn accent_palette_keeps_contrast() {
+    use crate::ui::theme::{luminance, palette};
     let blue = egui::Color32::from_rgb(0x00, 0x78, 0xD4);
-    let (light, dark) = (from_seed(blue, false), from_seed(blue, true));
-    assert!(light.primary.b() > light.primary.r() && dark.primary.b() > dark.primary.r(), "blue seed gives a blue primary");
-    let lum = |c: egui::Color32| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
-    assert!(lum(light.surface) > 230.0 && lum(light.text) < 50.0);
-    assert!(lum(dark.surface) < 30.0 && lum(dark.text) > 200.0);
-    let grey = from_seed(egui::Color32::from_rgb(0x4C, 0x4A, 0x48), true);
-    assert!((grey.primary.r() as i32 - grey.primary.b() as i32).abs() < 30, "a grey accent stays nearly grey");
+    let p = palette(blue, false);
+    assert!(p.accent.b() > p.accent.r(), "the Windows blue stays blue");
+    assert!(luminance(p.accent) >= 0.2, "a dark accent is lifted to stay readable on the dark base");
+    assert!(luminance(p.bg) < 0.01 && luminance(p.text) > 0.8);
+    assert_eq!(palette(blue, true).bg, egui::Color32::BLACK);
 }
 
 #[test]
@@ -338,4 +336,112 @@ fn server_configuration_view_has_no_wraith_parts() {
     assert_eq!(c.keys().collect::<Vec<_>>(), vec!["outbounds"]);
     let text = serde_json::to_string(&c).unwrap();
     assert!(!text.contains("tun-in") && !text.contains("wraith-dns") && !text.contains("inbounds"));
+}
+
+#[test]
+fn quic_block_rejects_udp_443_from_our_inlets() {
+    let p = profile("trojan://pw@example.com:443#Q");
+    let has = |st: &AppState| crate::xray::build(st, &p, &[], 0).unwrap().config.o("routing").unwrap().objects("rules").iter()
+        .any(|r| r.s("network") == "udp" && r.s("port") == "443" && r.s("outboundTag") == "block");
+    assert!(has(&state(json!({"quic": "reject", "tunnelMode": "proxy"}))));
+    assert!(!has(&state(json!({"quic": "allow", "tunnelMode": "proxy"}))));
+}
+
+#[test]
+fn traffic_history_days_are_oldest_first() {
+    let today = crate::util::local_time().date;
+    let mut h = crate::json::Obj::new();
+    h.insert(today.clone(), json!([1000, 24]));
+    let days = crate::stats::last_days(&h, 14);
+    assert_eq!(days.len(), 14);
+    assert_eq!(days.last().unwrap().1, 1024);
+    assert_eq!(days.last().unwrap().0, today[8..].to_string());
+    assert!(days[..13].iter().all(|d| d.1 == 0));
+}
+
+/// `WRAITH_SHOTS=dir cargo test --release -- --ignored --test-threads=1 render_screens`: draws every
+/// screen without a window (egui meshes rasterised on the CPU) and writes PNGs; a frame that hangs fails it.
+#[test]
+#[ignore]
+fn render_screens() {
+    use egui::{Color32, TextureId};
+    use std::collections::HashMap;
+    let Ok(out) = std::env::var("WRAITH_SHOTS") else { return };
+    let home = std::path::Path::new(&out).join("home");
+    let _ = std::fs::remove_dir_all(&home); std::fs::create_dir_all(&home).unwrap();
+    std::env::set_var("WRAITH_HOME", &home);
+    crate::store::init();
+    crate::demo();
+    crate::store::update(|s| s.set("greetName", "Alex".into()));
+    let (w, h) = (std::env::var("WRAITH_SHOT_W").ok().and_then(|v| v.parse().ok()).unwrap_or(980usize), std::env::var("WRAITH_SHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(860usize));
+    let ctx = egui::Context::default();
+    let mut app = crate::ui::app::App::with_context(&ctx, false);
+    let mut textures: HashMap<TextureId, (usize, usize, Vec<Color32>)> = HashMap::new();
+    let mut time = 0.0;
+    let screens = std::env::var("WRAITH_SCREENS").unwrap_or_else(|_| "home,home-on,servers,stats,stats-on,settings,routing,tunnel,subscriptions,ping,appearance,logs,import,sheet".into());
+    for screen in screens.split(',') {
+        let on = screen.ends_with("-on");
+        if on {
+            let id = crate::store::get().selected.clone();
+            let name = crate::store::get().selected().map(|p| p.name.clone()).unwrap_or_default();
+            crate::core::set_test_status(crate::core::State::Connected, &name, 2_400_000, 180_000);
+            let _ = id;
+            crate::stats::set_test_exit("185.220.101.42", "de", 68);
+            for i in 0..60 { let k = (i as f64 / 6.0).sin().abs(); crate::stats::sample((k * 3_000_000.0) as i64 + 200_000, (k * 300_000.0) as i64 + 20_000); }
+        } else { crate::core::set_test_status(crate::core::State::Off, "", 0, 0); }
+        app.show(screen.trim_end_matches("-on"));
+        let mut last = None;
+        for _ in 0..40 {
+            time += 0.05;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))), time: Some(time), ..Default::default() };
+            let started = std::time::Instant::now();
+            let output = ctx.run(input, |ctx| app.frame(ctx));
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "{screen}: a frame took {:?}", started.elapsed());
+            for (id, delta) in &output.textures_delta.set {
+                let egui::ImageData::Color(img) = &delta.image;
+                match delta.pos {
+                    None => { textures.insert(*id, (img.size[0], img.size[1], img.pixels.clone())); }
+                    Some([x0, y0]) => if let Some((tw, _, px)) = textures.get_mut(id) { for y in 0..img.size[1] { for x in 0..img.size[0] { px[(y0 + y) * *tw + x0 + x] = img.pixels[y * img.size[0] + x]; } } },
+                }
+            }
+            last = Some(ctx.tessellate(output.shapes, output.pixels_per_point));
+        }
+        let mut px = vec![[0f32; 4]; w * h];
+        for prim in last.unwrap() {
+            let egui::epaint::Primitive::Mesh(mesh) = prim.primitive else { continue };
+            let clip = prim.clip_rect;
+            let tex = textures.get(&mesh.texture_id);
+            for tri in mesh.indices.chunks(3) {
+                let v = [mesh.vertices[tri[0] as usize], mesh.vertices[tri[1] as usize], mesh.vertices[tri[2] as usize]];
+                let (minx, maxx) = (v.iter().map(|p| p.pos.x).fold(f32::MAX, f32::min).max(clip.min.x).max(0.0), v.iter().map(|p| p.pos.x).fold(f32::MIN, f32::max).min(clip.max.x).min(w as f32));
+                let (miny, maxy) = (v.iter().map(|p| p.pos.y).fold(f32::MAX, f32::min).max(clip.min.y).max(0.0), v.iter().map(|p| p.pos.y).fold(f32::MIN, f32::max).min(clip.max.y).min(h as f32));
+                let area = (v[1].pos.x - v[0].pos.x) * (v[2].pos.y - v[0].pos.y) - (v[2].pos.x - v[0].pos.x) * (v[1].pos.y - v[0].pos.y);
+                if area.abs() < 1e-6 || minx >= maxx || miny >= maxy { continue; }
+                for y in (miny.floor() as usize)..(maxy.ceil() as usize).min(h) {
+                    for x in (minx.floor() as usize)..(maxx.ceil() as usize).min(w) {
+                        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let e = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (fy - a.y) - (b.y - a.y) * (fx - a.x);
+                        let (w0, w1, w2) = (e(v[1].pos, v[2].pos) / area, e(v[2].pos, v[0].pos) / area, e(v[0].pos, v[1].pos) / area);
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+                        let mut c = [0f32; 4];
+                        for (k, wk) in [w0, w1, w2].iter().enumerate() { let col = v[k].color.to_array(); for i in 0..4 { c[i] += col[i] as f32 / 255.0 * wk; } }
+                        if let Some((tw, th, tp)) = tex {
+                            let u = v[0].uv.x * w0 + v[1].uv.x * w1 + v[2].uv.x * w2; let vv = v[0].uv.y * w0 + v[1].uv.y * w1 + v[2].uv.y * w2;
+                            let (sx, sy) = ((u * *tw as f32 - 0.5).clamp(0.0, *tw as f32 - 1.0), (vv * *th as f32 - 0.5).clamp(0.0, *th as f32 - 1.0));
+                            let (x0, y0) = (sx.floor() as usize, sy.floor() as usize); let (x1, y1) = ((x0 + 1).min(tw - 1), (y0 + 1).min(th - 1)); let (ax, ay) = (sx - x0 as f32, sy - y0 as f32);
+                            let s = |xx: usize, yy: usize| tp[yy * tw + xx].to_array();
+                            let (a, b, cc, d) = (s(x0, y0), s(x1, y0), s(x0, y1), s(x1, y1));
+                            for i in 0..4 { let t = (a[i] as f32 * (1.0 - ax) + b[i] as f32 * ax) * (1.0 - ay) + (cc[i] as f32 * (1.0 - ax) + d[i] as f32 * ax) * ay; c[i] *= t / 255.0; }
+                        }
+                        let dst = &mut px[y * w + x];
+                        for i in 0..4 { dst[i] = c[i] + dst[i] * (1.0 - c[3]); }
+                    }
+                }
+            }
+        }
+        let bytes: Vec<u8> = px.iter().flat_map(|p| [(p[0] * 255.0) as u8, (p[1] * 255.0) as u8, (p[2] * 255.0) as u8, 255]).collect();
+        let file = std::fs::File::create(std::path::Path::new(&out).join(format!("{screen}.png"))).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&bytes).unwrap();
+    }
 }

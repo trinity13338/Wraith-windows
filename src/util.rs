@@ -156,3 +156,45 @@ pub fn run_hidden_stdin(exe: &std::path::Path, args: &[&str], input: &[u8], time
     let text = format!("{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
     if result.status.success() { Ok(text) } else { Err(text) }
 }
+
+/// Local time parts (year, month, day, hour, minute) of a unix time, in the Windows time zone.
+fn local_parts(unix: i64) -> (u16, u16, u16, u16, u16) {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    let ticks = ((unix + 11_644_473_600) as u64) * 10_000_000;
+    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() }; let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { FileTimeToSystemTime(&ft, &mut utc); SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local); }
+    (local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute)
+}
+/// Local "dd.MM, HH:mm" for a unix time.
+pub fn local_short(unix: i64) -> String { let (_, m, d, h, mi) = local_parts(unix); format!("{d:02}.{m:02}, {h:02}:{mi:02}") }
+/// The local hour (0–23), for the greeting.
+pub fn local_hour() -> i32 {
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut t = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut t) };
+    t.wHour as i32
+}
+
+/// The Windows Open / Save As dialog. None when cancelled. Blocks: call it from a background thread.
+pub fn file_dialog(save: bool, title: &str, name: &str, filter: &[&str]) -> Result<Option<std::path::PathBuf>, String> {
+    use windows_sys::Win32::UI::Controls::Dialogs::*;
+    let patterns = filter.join(";");
+    let filter_w: Vec<u16> = format!("{title} ({patterns})\0{patterns}\0\0").encode_utf16().collect();
+    let title_w = wide(title);
+    let mut buf = vec![0u16; 4096];
+    for (i, c) in name.encode_utf16().take(4000).enumerate() { buf[i] = c; }
+    let ext = filter.first().map(|f| f.trim_start_matches("*.").to_string()).unwrap_or_default();
+    let ext_w = wide(&ext);
+    let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    ofn.lpstrFilter = filter_w.as_ptr(); ofn.nFilterIndex = 1;
+    ofn.lpstrFile = buf.as_mut_ptr(); ofn.nMaxFile = buf.len() as u32;
+    ofn.lpstrTitle = title_w.as_ptr(); ofn.lpstrDefExt = if ext.is_empty() { std::ptr::null() } else { ext_w.as_ptr() };
+    ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | if save { OFN_OVERWRITEPROMPT } else { OFN_FILEMUSTEXIST };
+    let ok = unsafe { if save { GetSaveFileNameW(&mut ofn) } else { GetOpenFileNameW(&mut ofn) } };
+    if ok == 0 { return Ok(None); }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Ok(Some(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len]))))
+}

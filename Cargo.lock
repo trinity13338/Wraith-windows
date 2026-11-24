@@ -1316,6 +1316,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3508,13 +3510,14 @@ dependencies = [
 
 [[package]]
 name = "wraith"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "base64",
  "eframe",
  "egui",
  "getrandom 0.2.17",
  "idna",
+ "image",
  "png 0.17.16",
  "regex",
  "rustls",

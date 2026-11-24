@@ -75,6 +75,8 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     if !resolver_ips.is_empty() { head.push(json!({"type": "field", "ip": resolver_ips, "outboundTag": app[1]})); }
     // The local network and the router stay reachable.
     if settings.b("bypassLan", true) { head.push(json!({"type": "field", "ip": ["geoip:private"], "outboundTag": app[1]})); }
+    // «QUIC: блокировать»: browsers fall back to TCP, which the server usually carries better.
+    if settings.s("quic") == "reject" { head.push(json!({"type": "field", "inboundTag": ours, "network": "udp", "port": "443", "outboundTag": app[2]})); }
     let mode = settings.s_or("mode", "rules");
     if mode == "direct" || mode == "global" {
         // "Всё через VPN" with a provider balancer goes to the balancer, not to one fixed server.
