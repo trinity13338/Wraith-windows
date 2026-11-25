@@ -69,6 +69,7 @@ pub struct App {
     slider: Option<(f32, f32)>,
     start_hidden: bool, frames: u64,
     _tray: Option<tray_icon::TrayIcon>,
+    tray_checked: Option<Instant>, tray_light: Option<bool>,
 }
 
 /// Busy label, toasts and running checks outlive a window: it is closed into the tray and reopened.
@@ -130,11 +131,22 @@ pub fn startup(connect: bool) {
     if connect || connect_on_start { let selected = store::get().selected().cloned(); if let Some(p) = selected { core::connect(p); } }
 }
 
+/// A short line for the home screen; another one every 30 minutes.
 pub fn greeting() -> &'static str {
-    match util::local_hour() {
-        5..=11 => crate::tr!("Доброе утро", "Good morning"), 12..=17 => crate::tr!("Добрый день", "Good afternoon"),
-        18..=22 => crate::tr!("Добрый вечер", "Good evening"), _ => crate::tr!("Доброй ночи", "Good night"),
-    }
+    const PHRASES: &[(&str, &str)] = &[
+        ("Тихо и незаметно", "Quiet and unseen"), ("Призрак на связи", "The ghost is online"), ("Сеть без границ", "A web without borders"),
+        ("Невидимка в деле", "Invisible at work"), ("Свои пути", "Your own roads"), ("Мимо фильтров", "Past the filters"),
+        ("Тень в сети", "A shadow on the net"), ("Без следа", "Without a trace"), ("Туннель готов", "The tunnel is ready"),
+        ("Дорога открыта", "The road is open"), ("Ни одного лишнего глаза", "No prying eyes"), ("Сквозь стены", "Through the walls"),
+        ("Скорость и тишина", "Speed and silence"), ("Шифр на месте", "The cipher holds"), ("Лёгкий как дым", "Light as smoke"),
+        ("Интернет как был", "The internet as it was"), ("Сигнал чистый", "The signal is clean"), ("Пакеты в пути", "Packets on their way"),
+        ("Здесь никого нет", "Nobody here"), ("Ночной режим сети", "The net after dark"), ("Свобода по умолчанию", "Freedom by default"),
+        ("Тише воды", "Still waters"), ("Мир без замков", "A world without locks"), ("Связь держится", "The line holds"),
+    ];
+    // A step every 30 minutes, scrambled so neighbouring half-hours do not read in list order.
+    let step = (util::unix_now() / 1800) as u64;
+    let i = (step.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % PHRASES.len();
+    crate::tr!(PHRASES[i].0, PHRASES[i].1)
 }
 fn servers_count(n: usize) -> String { format!("{n} {}", util::plural(n as i64, crate::tr!("сервер", "server"), crate::tr!("сервера", "servers"), crate::tr!("серверов", "servers"))) }
 fn routing_label(mode: &str) -> &'static str { match mode { "global" => crate::tr!("Всё через VPN", "Everything through VPN"), "direct" => crate::tr!("Напрямую", "Direct"), _ => crate::tr!("По правилам", "By rules") } }
@@ -157,7 +169,7 @@ impl App {
         super::set_context(ctx.clone());
         backdrop::load();
         let mut app = App { pal, tab: Tab::Home, in_settings: false, pages: vec![], search: String::new(), modal: None, shared: shared(),
-            profiles: vec![], subs: vec![], revision: u64::MAX, manual_collapsed: false, log_cache: (u64::MAX, String::new()), history: (Obj::new(), None), slider: None, start_hidden, frames: 0, _tray: None };
+            profiles: vec![], subs: vec![], revision: u64::MAX, manual_collapsed: false, log_cache: (u64::MAX, String::new()), history: (Obj::new(), None), slider: None, start_hidden, frames: 0, _tray: None, tray_checked: None, tray_light: None };
         match std::env::args().find_map(|a| a.strip_prefix("--page=").map(String::from)).as_deref() {
             Some("servers") => app.tab = Tab::Servers, Some("stats") => app.tab = Tab::Stats,
             Some("settings") => app.in_settings = true,
@@ -481,17 +493,19 @@ impl App {
             ui.add_space(18.0);
             if st.state == State::Connected {
                 let exit = crate::stats::exit();
+                let shown = store::get().b("showExitIp");
+                let hidden = crate::tr!("Скрыто", "Hidden");
                 let secs = st.since.map(|s| s.elapsed().as_secs() as i64).unwrap_or(0);
                 let width = ui.available_width();
                 ui.horizontal(|ui| {
                     let u = (width - 8.0) / 2.7;
                     w::chip(ui, &p, &util::duration(secs), Some(Ic::Clock), p.text, u);
-                    w::chip(ui, &p, if exit.ip.is_empty() { "—" } else { &exit.ip }, Some(Ic::Globe), p.text, u * 1.7);
+                    w::chip(ui, &p, if !shown { hidden } else if exit.ip.is_empty() { "—" } else { &exit.ip }, Some(Ic::Globe), if shown { p.text } else { p.muted }, u * 1.7);
                 });
                 ui.horizontal(|ui| {
                     let u = (width - 16.0) / 3.0;
-                    let delay = if exit.delay > 0 { crate::trf!("{} мс", "{} ms", exit.delay) } else { crate::tr!("— мс", "— ms").into() };
-                    w::chip(ui, &p, &delay, None, if exit.delay > 0 { w::latency_color(&p, exit.delay) } else { p.muted }, u * 0.7);
+                    let delay = if !shown { hidden.to_string() } else if exit.delay > 0 { crate::trf!("{} мс", "{} ms", exit.delay) } else { crate::tr!("— мс", "— ms").into() };
+                    w::chip(ui, &p, &delay, None, if shown && exit.delay > 0 { w::latency_color(&p, exit.delay) } else { p.muted }, u * 0.7);
                     w::chip(ui, &p, &format!("↓ {}", rate(st.rx_rate)), None, p.text, u * 1.15);
                     w::chip(ui, &p, &format!("↑ {}", rate(st.tx_rate)), None, p.text, u * 1.15);
                 });
@@ -659,13 +673,16 @@ impl App {
         ui.horizontal(|ui| {
             let buttons = if sub.is_some() { 3.0 } else { 1.0 } * 46.0;
             let text_w = ui.available_width() - buttons - 8.0;
-            let tg = w::line(ui, &title, font_m(21.0), p.text, text_w - 8.0);
-            let lg = w::wrapped(ui, &line, font(12.0), line_color, text_w - 8.0, 2);
+            // A chevron left of the title: the group folds and unfolds with a click.
+            let tg = w::line(ui, &title, font_m(21.0), p.text, text_w - 36.0);
+            let lg = w::wrapped(ui, &line, font(12.0), line_color, text_w - 36.0, 2);
             let h = tg.size().y + lg.size().y + 8.0;
             let (r, resp) = ui.allocate_exact_size(vec2(text_w, h), Sense::click());
             let th = tg.size().y;
-            ui.painter().galley(pos2(r.left() + 6.0, r.top() + 4.0), tg, p.text);
-            ui.painter().galley(pos2(r.left() + 6.0, r.top() + 4.0 + th), lg, line_color);
+            if resp.hovered() { ui.painter().rect_filled(r, CornerRadius::same(14), alpha(p.text, 0.04)); }
+            icons::at(ui.painter(), pos2(r.left() + 14.0, r.top() + 4.0 + th / 2.0), 18.0, if collapsed { Ic::Chevron } else { Ic::ChevronDown }, p.muted);
+            ui.painter().galley(pos2(r.left() + 30.0, r.top() + 4.0), tg, p.text);
+            ui.painter().galley(pos2(r.left() + 30.0, r.top() + 4.0 + th), lg, line_color);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 match sub { Some(s) => { let id = s.id.clone(); store::update(|st| if let Some(x) = st.subscriptions.iter_mut().find(|x| x.id == id) { x.collapsed = !x.collapsed; }); } None => self.manual_collapsed = !self.manual_collapsed }
             }
@@ -682,6 +699,7 @@ impl App {
             });
         });
         let Some(s) = sub else { return };
+        if collapsed { return; }
         let (used, total, expire) = s.usage();
         if !s.user_info.is_empty() {
             let mut text = format!("{} / {}", util::bytes(used), if total > 0 { util::bytes(total) } else { "∞".into() });
@@ -886,23 +904,23 @@ impl App {
             ui.label(RichText::new(format!("Wraith {} · Xray", env!("CARGO_PKG_VERSION"))).font(font(12.5)).color(p.muted));
             w::section_title(ui, &p, crate::tr!("Подключение", "Connection"));
             w::group(ui, &p, |ui| {
-                if w::setting_row(ui, &p, crate::tr!("Маршрутизация", "Routing"), &crate::trf!("{} · своих правил: {rules}", "{} · custom rules: {rules}", routing_label(&s.s("mode"))), Some(Ic::Route), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Routing); }
+                if w::setting_row(ui, &p, crate::tr!("Маршрутизация", "Routing"), &crate::trf!("Своих правил: {rules}", "Custom rules: {rules}"), Some(Ic::Route), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Routing); }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("Туннель и обход блокировок", "Tunnel and DPI bypass"), crate::tr!("DPI, DNS, MTU, локальный прокси", "DPI, DNS, MTU, local proxy"), Some(Ic::Shield), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Tunnel); }
+                if w::setting_row(ui, &p, crate::tr!("Туннель и обход блокировок", "Tunnel and DPI bypass"), "", Some(Ic::Shield), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Tunnel); }
                 w::divider(ui, &p);
                 if w::setting_row(ui, &p, crate::tr!("Как подключаться", "How to connect"), mode_label(&s.s("tunnelMode")), Some(Ic::Monitor), false, Trailing::Chevron, true).clicked() {
                     app.choice(crate::tr!("Режим подключения", "Connection mode"), &[crate::tr!("Системный прокси + TUN · весь трафик", "System proxy + TUN · all traffic"), crate::tr!("Только системный прокси · без прав администратора", "System proxy only · no administrator rights"), crate::tr!("Только TUN", "TUN only")], &["both", "proxy", "tun"], "tunnelMode");
                 }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Подключаться при запуске", "Connect on start"), crate::tr!("Когда открывается Wraith", "When Wraith opens"), Some(Ic::Power), s.b("connectOnStart", false)) { app.toggle_setting("connectOnStart"); }
+                if w::switch_row(ui, &p, crate::tr!("Подключаться при запуске", "Connect on start"), "", Some(Ic::Power), s.b("connectOnStart", false)) { app.toggle_setting("connectOnStart"); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Быстрый сервер автоматически", "Fastest server automatically"), crate::tr!("Выбирать самый быстрый сервер профиля, проверка раз в 3 минуты", "Pick the fastest server of the profile, checked every 3 minutes"), Some(Ic::Bolt), s.b("autoSelect", false)) { app.toggle_setting("autoSelect"); }
+                if w::switch_row(ui, &p, crate::tr!("Быстрый сервер автоматически", "Fastest server automatically"), "", Some(Ic::Bolt), s.b("autoSelect", false)) { app.toggle_setting("autoSelect"); }
             });
             w::section_title(ui, &p, crate::tr!("Серверы", "Servers"));
             w::group(ui, &p, |ui| {
-                if w::setting_row(ui, &p, crate::tr!("Подписки", "Subscriptions"), crate::tr!("Обновление, сортировка, данные для провайдера", "Updates, sorting, data for the provider"), Some(Ic::Refresh), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Subscriptions); }
+                if w::setting_row(ui, &p, crate::tr!("Подписки", "Subscriptions"), "", Some(Ic::Refresh), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Subscriptions); }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("Проверка задержки", "Latency check"), ping_label(&s.s("pingType")), Some(Ic::Pulse), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Ping); }
+                if w::setting_row(ui, &p, crate::tr!("Пинг", "Ping"), ping_label(&s.s("pingType")), Some(Ic::Pulse), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Ping); }
             });
             w::section_title(ui, &p, crate::tr!("Оформление", "Appearance"));
             w::group(ui, &p, |ui| {
@@ -911,32 +929,32 @@ impl App {
             });
             w::section_title(ui, &p, crate::tr!("Приложение", "App"));
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("Запускать вместе с Windows", "Start with Windows"), crate::tr!("Свёрнутым в трей", "Minimised to the tray"), Some(Ic::Sparkle), s.b("autostart", false)) {
+                if w::switch_row(ui, &p, crate::tr!("Запускать вместе с Windows", "Start with Windows"), "", Some(Ic::Sparkle), s.b("autostart", false)) {
                     let next = !s.b("autostart", false);
                     match crate::install::set_autostart(next) { Ok(()) => store::update(|st| st.set("autostart", next.into())), Err(e) => app.toast(e) }
                 }
                 w::divider(ui, &p);
                 if w::switch_row(ui, &p, crate::tr!("Сворачивать в трей при закрытии", "Minimise to the tray on close"), if super::tray_available() { "" } else { crate::tr!("Значок в трее сейчас недоступен", "The tray icon is not available now") }, Some(Ic::Down), s.b("minimizeToTray", true)) { app.toggle_setting("minimizeToTray"); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Проверять обновления", "Check for updates"), crate::tr!("GitHub Releases, в запросе только версия", "GitHub Releases, the request carries only the version"), Some(Ic::Download), s.b("checkUpdates", true)) { app.toggle_setting("checkUpdates"); }
+                if w::switch_row(ui, &p, crate::tr!("Проверять обновления", "Check for updates"), "", Some(Ic::Download), s.b("checkUpdates", true)) { app.toggle_setting("checkUpdates"); }
                 w::divider(ui, &p);
                 if w::switch_row(ui, &p, crate::tr!("Подробный журнал ядра", "Detailed core log"), "", Some(Ic::Log), s.b("debugLogs", false)) { app.toggle_setting("debugLogs"); }
             });
             w::section_title(ui, &p, crate::tr!("Данные", "Data"));
             w::group(ui, &p, |ui| {
-                if w::setting_row(ui, &p, crate::tr!("Экспорт резервной копии", "Export a backup"), crate::tr!("Содержит ключи подключений — храните в закрытом месте", "Contains connection keys — keep it private"), Some(Ic::Download), false, Trailing::Chevron, true).clicked() {
+                if w::setting_row(ui, &p, crate::tr!("Экспорт резервной копии", "Export a backup"), "", Some(Ic::Download), false, Trailing::Chevron, true).clicked() {
                     app.modal = Some(Modal::Confirm { title: crate::tr!("Экспорт содержит ключи", "The export contains keys").into(), text: crate::tr!("Резервная копия — обычный JSON-файл с вашими серверами. Не отправляйте его другим.", "The backup is a plain JSON file with your servers. Do not send it to anyone.").into(), action: crate::tr!("Экспорт", "Export").into(), danger: false, run: Confirmed::Export });
                 }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("Восстановить из файла", "Restore from a file"), crate::tr!("Заменит текущие серверы и настройки", "Replaces current servers and settings"), Some(Ic::Layers), false, Trailing::Chevron, true).clicked() {
+                if w::setting_row(ui, &p, crate::tr!("Восстановить из файла", "Restore from a file"), "", Some(Ic::Layers), false, Trailing::Chevron, true).clicked() {
                     app.modal = Some(Modal::Confirm { title: crate::tr!("Заменить текущие данные?", "Replace current data?").into(), text: crate::tr!("Серверы, подписки и настройки будут заменены. Подключение остановится.", "Servers, subscriptions and settings will be replaced. The connection stops.").into(), action: crate::tr!("Выбрать файл", "Pick a file").into(), danger: false, run: Confirmed::Restore });
                 }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("Журнал", "Log"), crate::tr!("События приложения и ядра Xray", "App and Xray core events"), Some(Ic::Log), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Logs); }
+                if w::setting_row(ui, &p, crate::tr!("Журнал", "Log"), "", Some(Ic::Log), false, Trailing::Chevron, true).clicked() { app.pages.push(Page::Logs); }
                 w::divider(ui, &p);
                 if w::setting_row(ui, &p, crate::tr!("Папка данных", "Data folder"), &store::folder().display().to_string(), Some(Ic::Folder), false, Trailing::Chevron, true).clicked() { util::open_path(&store::folder()); }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("Сбросить настройки", "Reset settings"), crate::tr!("Серверы, подписки и правила останутся", "Servers, subscriptions and rules are kept"), Some(Ic::Refresh), true, Trailing::None, true).clicked() {
+                if w::setting_row(ui, &p, crate::tr!("Сбросить настройки", "Reset settings"), "", Some(Ic::Refresh), true, Trailing::None, true).clicked() {
                     app.modal = Some(Modal::Confirm { title: crate::tr!("Сбросить настройки?", "Reset the settings?").into(), text: crate::tr!("Настройки вернутся к значениям по умолчанию.", "Settings return to defaults.").into(), action: crate::tr!("Сбросить", "Reset").into(), danger: true, run: Confirmed::Reset });
                 }
             });
@@ -951,7 +969,7 @@ impl App {
                     });
                 }
                 w::divider(ui, &p);
-                if w::setting_row(ui, &p, crate::tr!("О Wraith", "About Wraith"), crate::tr!("Клиент Xray. Без телеметрии и аналитики. GPL-3.0", "Xray client. No telemetry or analytics. GPL-3.0"), Some(Ic::Info), false, Trailing::Chevron, true).clicked() {
+                if w::setting_row(ui, &p, crate::tr!("О Wraith", "About Wraith"), "", Some(Ic::Info), false, Trailing::Chevron, true).clicked() {
                     app.modal = Some(Modal::Info { title: format!("Wraith {}", env!("CARGO_PKG_VERSION")), text: crate::trf!("Клиент для VLESS, VMess, Trojan, Shadowsocks, Hysteria2 и WireGuard на ядре Xray.\n\nНикакой статистики об использовании не собирается. Обновления проверяются через GitHub, в запросе только версия приложения.\n\nЛицензия GPL-3.0-or-later. Xray-core — MPL-2.0, флаги — flag-icons (MIT).\n\nhttps://github.com/{}", "A client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard on the Xray core.\n\nNo usage statistics are collected. Updates are checked on GitHub; the request carries only the app version.\n\nLicence GPL-3.0-or-later. Xray-core — MPL-2.0, flags — flag-icons (MIT).\n\nhttps://github.com/{}", updater::REPO), copy: false });
                 }
                 w::divider(ui, &p);
@@ -964,26 +982,17 @@ impl App {
         let p = self.pal;
         let s = store::get().settings.clone();
         let rules = store::get().rules.clone();
-        let mode = s.s_or("mode", "rules");
         self.column(ui, "routing", 680.0, |app, ui| {
-            app.page_header(ui, crate::tr!("Маршрутизация", "Routing"), crate::tr!("Какой трафик идёт через VPN", "Which traffic goes through the VPN"), |_, _| {});
-            ui.add_space(14.0);
-            if let Some(v) = w::segmented(ui, &p, &["rules", "global", "direct"], &[crate::tr!("Правила", "Rules"), crate::tr!("Всё в VPN", "All VPN"), crate::tr!("Напрямую", "Direct")], &mode) { app.set("mode", v.into()); }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| { ui.add_space(8.0); ui.label(RichText::new(match mode.as_str() {
-                "global" => crate::tr!("Весь трафик идёт через VPN; правила не применяются.", "All traffic goes through the VPN; rules are not applied."),
-                "direct" => crate::tr!("VPN не используется: весь трафик идёт напрямую.", "The VPN is not used: all traffic goes direct."),
-                _ => crate::tr!("Сначала правила провайдера, затем ваши правила ниже.", "Provider rules first, then your rules below."),
-            }).font(font(12.5)).color(p.muted)); });
+            app.page_header(ui, crate::tr!("Маршрутизация", "Routing"), "", |_, _| {});
             w::section_title(ui, &p, crate::tr!("Общие", "General"));
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("Локальная сеть напрямую", "Local network direct"), crate::tr!("Роутер, принтеры, частные IP", "Router, printers, private IPs"), Some(Ic::Wifi), s.b("bypassLan", true)) { app.toggle_setting("bypassLan"); }
+                if w::switch_row(ui, &p, crate::tr!("Локальная сеть напрямую", "Local network direct"), "", Some(Ic::Wifi), s.b("bypassLan", true)) { app.toggle_setting("bypassLan"); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Определять домены", "Detect domains"), crate::tr!("Sniffing: правила по доменам работают и для программ с DoH", "Sniffing: domain rules work even for programs with DoH"), Some(Ic::Eye), s.b("sniff", true)) { app.toggle_setting("sniff"); }
+                if w::switch_row(ui, &p, crate::tr!("Определять домены", "Detect domains"), "", Some(Ic::Eye), s.b("sniff", true)) { app.toggle_setting("sniff"); }
             });
             w::section_title(ui, &p, crate::tr!("Свои правила", "Custom rules"));
             w::group(ui, &p, |ui| {
-                if rules.is_empty() && w::setting_row(ui, &p, crate::tr!("Правил пока нет", "No rules yet"), crate::tr!("Например: сайты банков — напрямую", "For example: bank sites — direct"), Some(Ic::Route), false, Trailing::Chevron, true).clicked() {
+                if rules.is_empty() && w::setting_row(ui, &p, crate::tr!("Правил пока нет", "No rules yet"), "", Some(Ic::Route), false, Trailing::Chevron, true).clicked() {
                     app.modal = Some(Modal::Rule { index: None, rule: new_rule() });
                 }
                 for (i, r) in rules.iter().enumerate() {
@@ -1017,10 +1026,10 @@ impl App {
         let p = self.pal;
         let s = store::get().settings.clone();
         self.column(ui, "tunnel", 680.0, |app, ui| {
-            app.page_header(ui, crate::tr!("Туннель", "Tunnel"), crate::tr!("Обход блокировок, сеть и локальный прокси", "DPI bypass, network and local proxy"), |_, _| {});
+            app.page_header(ui, crate::tr!("Туннель", "Tunnel"), "", |_, _| {});
             w::section_title(ui, &p, crate::tr!("Обход DPI", "DPI bypass"));
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("Фрагментация", "Fragmentation"), crate::tr!("Дробит начало TLS-соединения с сервером, чтобы DPI его не узнал", "Splits the start of the TLS connection so DPI does not recognise it"), Some(Ic::Layers), s.b("fragment", false)) { app.toggle_setting("fragment"); }
+                if w::switch_row(ui, &p, crate::tr!("Фрагментация", "Fragmentation"), "", Some(Ic::Layers), s.b("fragment", false)) { app.toggle_setting("fragment"); }
                 if s.b("fragment", false) {
                     w::divider(ui, &p);
                     if w::setting_row(ui, &p, crate::tr!("Что дробить", "What to split"), &s.s_or("fragmentPackets", "tlshello"), None, false, Trailing::None, true).clicked() { app.choice(crate::tr!("Какие пакеты дробить", "Which packets"), &[crate::tr!("tlshello · только ClientHello", "tlshello · ClientHello only"), "1-3", "1-5"], &["tlshello", "1-3", "1-5"], "fragmentPackets"); }
@@ -1033,7 +1042,7 @@ impl App {
                     if w::setting_row(ui, &p, crate::tr!("Максимум частей", "Maximum parts"), if ms.is_empty() { crate::tr!("без ограничения", "no limit") } else { &ms }, None, false, Trailing::None, true).clicked() { app.input(crate::tr!("Максимальное разделение (пусто — без ограничения)", "Maximum split (empty — no limit)"), ms.clone(), Target::Setting("fragmentMaxSplit".into())); }
                 }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Шумы", "Noise"), crate::tr!("Мусорные UDP-пакеты перед первым настоящим: помогает Hysteria2 и QUIC", "Junk UDP packets before the first real one: helps Hysteria2 and QUIC"), Some(Ic::Sparkle), s.b("noise", false)) { app.toggle_setting("noise"); }
+                if w::switch_row(ui, &p, crate::tr!("Шумы", "Noise"), "", Some(Ic::Sparkle), s.b("noise", false)) { app.toggle_setting("noise"); }
                 if s.b("noise", false) {
                     let t = s.s_or("noiseType", "rand");
                     w::divider(ui, &p);
@@ -1045,7 +1054,7 @@ impl App {
                     if w::setting_row(ui, &p, crate::tr!("Задержка, мс", "Delay, ms"), &s.s_or("noiseDelay", "10-16"), None, false, Trailing::None, true).clicked() { app.input(crate::tr!("Задержка шума, мс", "Noise delay, ms"), s.s_or("noiseDelay", "10-16"), Target::Setting("noiseDelay".into())); }
                 }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, "Mux", crate::tr!("Несколько соединений в одном. Не применяется к Vision, Hysteria и WireGuard", "Several connections in one. Not used with Vision, Hysteria and WireGuard"), Some(Ic::Route), s.b("mux", false)) { app.toggle_setting("mux"); }
+                if w::switch_row(ui, &p, "Mux", "", Some(Ic::Route), s.b("mux", false)) { app.toggle_setting("mux"); }
                 if s.b("mux", false) {
                     w::divider(ui, &p);
                     if w::setting_row(ui, &p, crate::tr!("Потоков на соединение", "Streams per connection"), &s.i("muxConnections", 4).to_string(), None, false, Trailing::None, true).clicked() { app.number(crate::tr!("Потоков на соединение", "Streams per connection"), "muxConnections", 1, 1024); }
@@ -1058,10 +1067,10 @@ impl App {
             });
             w::section_title(ui, &p, "DNS");
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("DNS из конфигурации", "DNS from the configuration"), crate::tr!("DNS провайдера из JSON или профиля маршрутизации", "Provider DNS from the JSON or routing profile"), Some(Ic::Dns), s.b("dnsFromJson", false)) { app.toggle_setting("dnsFromJson"); }
+                if w::switch_row(ui, &p, crate::tr!("DNS из конфигурации", "DNS from the configuration"), "", Some(Ic::Dns), s.b("dnsFromJson", false)) { app.toggle_setting("dnsFromJson"); }
                 w::divider(ui, &p);
                 let custom = s.b("customDns", false);
-                if w::switch_row(ui, &p, crate::tr!("Свой DNS", "Own DNS"), if custom { crate::tr!("Запросы идут на адрес ниже", "Queries go to the address below") } else { crate::tr!("Выключено — DNS системы (адаптер, роутер)", "Off — the system's DNS (adapter, router)") }, Some(Ic::Globe), custom) { app.toggle_setting("customDns"); }
+                if w::switch_row(ui, &p, crate::tr!("Свой DNS", "Own DNS"), "", Some(Ic::Globe), custom) { app.toggle_setting("customDns"); }
                 if custom {
                     w::divider(ui, &p);
                     if w::setting_row(ui, &p, crate::tr!("Адрес DNS", "DNS address"), &s.s("tunnelDns"), None, false, Trailing::None, true).clicked() { app.input(crate::tr!("DNS: https://…, tls://… или IP", "DNS: https://…, tls://… or IP"), s.s("tunnelDns"), Target::Setting("tunnelDns".into())); }
@@ -1084,7 +1093,7 @@ impl App {
                 w::divider(ui, &p);
                 if w::setting_row(ui, &p, "HTTP", &format!("{host}:{}", s.i("httpProxyPort", 2082)), Some(Ic::Globe), false, Trailing::Icon(Ic::Edit), true).clicked() { app.number(crate::tr!("Порт HTTP", "HTTP port"), "httpProxyPort", 1024, 65535); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Доступ из локальной сети", "Access from the local network"), crate::tr!("Другие устройства смогут подключиться по логину и паролю", "Other devices can connect with the login and password"), Some(Ic::Wifi), lan) { app.toggle_setting("allowLan"); }
+                if w::switch_row(ui, &p, crate::tr!("Доступ из локальной сети", "Access from the local network"), "", Some(Ic::Wifi), lan) { app.toggle_setting("allowLan"); }
                 if lan {
                     w::divider(ui, &p);
                     if w::setting_row(ui, &p, crate::tr!("Логин", "Login"), "wraith", None, false, Trailing::Icon(Ic::Copy), true).clicked() { ui.ctx().copy_text("wraith".into()); app.toast(crate::tr!("Скопировано", "Copied")); }
@@ -1092,7 +1101,7 @@ impl App {
                     let pw = s.s("proxyPassword");
                     if w::setting_row(ui, &p, crate::tr!("Пароль", "Password"), &format!("{}••••••••", pw.chars().take(3).collect::<String>()), None, false, Trailing::Icon(Ic::Copy), true).clicked() { ui.ctx().copy_text(pw.clone()); app.toast(crate::tr!("Пароль скопирован", "Password copied")); }
                     w::divider(ui, &p);
-                    if w::setting_row(ui, &p, crate::tr!("Новый пароль", "New password"), crate::tr!("Старый перестанет работать", "The old one stops working"), Some(Ic::Refresh), false, Trailing::None, true).clicked() {
+                    if w::setting_row(ui, &p, crate::tr!("Новый пароль", "New password"), "", Some(Ic::Refresh), false, Trailing::None, true).clicked() {
                         app.modal = Some(Modal::Confirm { title: crate::tr!("Сменить пароль прокси?", "Change the proxy password?").into(), text: crate::tr!("Устройствам, которые используют прокси, нужно будет ввести новый.", "Devices using the proxy will need the new one.").into(), action: crate::tr!("Сменить", "Change").into(), danger: false, run: Confirmed::NewProxyPassword });
                     }
                 }
@@ -1107,9 +1116,9 @@ impl App {
             app.page_header(ui, crate::tr!("Подписки", "Subscriptions"), "", |_, _| {});
             w::section_title(ui, &p, crate::tr!("Обновление", "Updates"));
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("Обновлять автоматически", "Update automatically"), crate::tr!("Фоновая проверка раз в час, по интервалу подписки", "Background check every hour, by the subscription's interval"), Some(Ic::Refresh), s.b("autoUpdate", true)) { app.toggle_setting("autoUpdate"); }
+                if w::switch_row(ui, &p, crate::tr!("Обновлять автоматически", "Update automatically"), "", Some(Ic::Refresh), s.b("autoUpdate", true)) { app.toggle_setting("autoUpdate"); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Обновлять при запуске", "Update on start"), crate::tr!("Если подошёл интервал подписки", "If the subscription's interval has passed"), Some(Ic::Sparkle), s.b("updateOnOpen", false)) { app.toggle_setting("updateOnOpen"); }
+                if w::switch_row(ui, &p, crate::tr!("Обновлять при запуске", "Update on start"), "", Some(Ic::Sparkle), s.b("updateOnOpen", false)) { app.toggle_setting("updateOnOpen"); }
                 w::divider(ui, &p);
                 if w::switch_row(ui, &p, crate::tr!("Пинг при запуске", "Ping on start"), "", Some(Ic::Pulse), s.b("pingOnOpen", false)) { app.toggle_setting("pingOnOpen"); }
             });
@@ -1122,7 +1131,7 @@ impl App {
             });
             w::section_title(ui, &p, crate::tr!("Что получает провайдер", "What the provider receives"));
             w::group(ui, &p, |ui| {
-                if w::switch_row(ui, &p, crate::tr!("Передавать HWID", "Send HWID"), crate::tr!("Случайный ID установки, имя и версия системы — для лимита устройств", "Random install ID, system name and version — for device limits"), Some(Ic::Monitor), s.b("sendHwid", true)) { app.toggle_setting("sendHwid"); }
+                if w::switch_row(ui, &p, crate::tr!("Передавать HWID", "Send HWID"), "", Some(Ic::Monitor), s.b("sendHwid", true)) { app.toggle_setting("sendHwid"); }
                 w::divider(ui, &p);
                 let ua = s.s("userAgent");
                 if w::setting_row(ui, &p, "User-Agent", if ua.is_empty() { crate::tr!("автоматически", "automatic") } else { &ua }, Some(Ic::Code), false, Trailing::Chevron, true).clicked() { app.input(crate::tr!("User-Agent (пусто — автоматически)", "User-Agent (empty — automatic)"), ua.clone(), Target::Setting("userAgent".into())); }
@@ -1135,7 +1144,7 @@ impl App {
         let s = store::get().settings.clone();
         let t = s.s_or("pingType", "proxyGet");
         self.column(ui, "ping", 680.0, |app, ui| {
-            app.page_header(ui, crate::tr!("Проверка задержки", "Latency check"), "", |_, _| {});
+            app.page_header(ui, crate::tr!("Пинг", "Ping"), "", |_, _| {});
             w::section_title(ui, &p, crate::tr!("Способ", "Method"));
             w::group(ui, &p, |ui| {
                 if w::setting_row(ui, &p, crate::tr!("Как измерять", "How to measure"), ping_label(&t), Some(Ic::Pulse), false, Trailing::Chevron, true).clicked() {
@@ -1154,13 +1163,6 @@ impl App {
                 w::divider(ui, &p);
                 if w::setting_row(ui, &p, crate::tr!("Тайм-аут", "Timeout"), &crate::trf!("{} мс", "{} ms", s.i("pingTimeout", 5000)), None, false, Trailing::None, true).clicked() { app.number(crate::tr!("Тайм-аут, мс", "Timeout, ms"), "pingTimeout", 1000, 30000); }
             });
-            ui.add_space(10.0);
-            let text = match t.as_str() {
-                x if x.starts_with("proxy") => crate::tr!("Запрос идёт через временное ядро Xray, VPN включать не нужно. Показывается лучший из двух результатов.", "The request goes through a temporary Xray core; the VPN need not be on. The better of two results is shown."),
-                "tcp" => crate::tr!("TCP проверяет только, открыт ли порт. Для Hysteria2 и WireGuard автоматически используется запрос через сервер.", "TCP only checks that the port is open. Hysteria2 and WireGuard automatically use a request through the server."),
-                _ => crate::tr!("ICMP может блокироваться сетью или провайдером.", "ICMP may be blocked by the network or provider."),
-            };
-            ui.horizontal(|ui| { ui.add_space(8.0); ui.add(egui::Label::new(RichText::new(format!("{text}{}", crate::tr!(" При включённом VPN проверка идёт мимо туннеля, напрямую к серверу.", " With the VPN on, the check bypasses the tunnel and goes straight to the server."))).font(font(12.5)).color(p.muted)).wrap()); });
         });
     }
 
@@ -1172,7 +1174,7 @@ impl App {
             app.page_header(ui, crate::tr!("Оформление", "Appearance"), "", |_, _| {});
             w::section_title(ui, &p, crate::tr!("Фон", "Background"));
             w::group(ui, &p, |ui| {
-                if w::setting_row(ui, &p, if photo { crate::tr!("Сменить фото", "Change the photo") } else { crate::tr!("Поставить своё фото", "Use your own photo") }, crate::tr!("Копия хранится только в папке Wraith", "A copy is kept in Wraith's folder only"), Some(Ic::Image), false, Trailing::Chevron, true).clicked() {
+                if w::setting_row(ui, &p, if photo { crate::tr!("Сменить фото", "Change the photo") } else { crate::tr!("Поставить своё фото", "Use your own photo") }, "", Some(Ic::Image), false, Trailing::Chevron, true).clicked() {
                     app.background(crate::tr!("Ставим фон…", "Setting the background…"), || {
                         let Some(path) = util::file_dialog(false, crate::tr!("Фото для фона", "Background photo"), "", &["*.jpg", "*.jpeg", "*.png"])? else { return Ok(String::new()) };
                         backdrop::set_photo(&path)?;
@@ -1181,7 +1183,7 @@ impl App {
                 }
                 if photo {
                     w::divider(ui, &p);
-                    if w::setting_row(ui, &p, crate::tr!("Убрать фото", "Remove the photo"), crate::tr!("Вернуть живой градиент", "Back to the live gradient"), Some(Ic::Delete), true, Trailing::None, true).clicked() {
+                    if w::setting_row(ui, &p, crate::tr!("Убрать фото", "Remove the photo"), "", Some(Ic::Delete), true, Trailing::None, true).clicked() {
                         backdrop::remove_photo();
                         if store::get().s("accent") == "photo" { app.set("accent", "sakura".into()); }
                     }
@@ -1228,9 +1230,9 @@ impl App {
                 let name = s.s("greetName");
                 if w::setting_row(ui, &p, crate::tr!("Как к вам обращаться", "What to call you"), if name.is_empty() { crate::tr!("не задано", "not set") } else { &name }, Some(Ic::User), false, Trailing::Chevron, true).clicked() { app.input(crate::tr!("Имя в приветствии", "Name in the greeting"), name.clone(), Target::Setting("greetName".into())); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Внешний IP и задержка", "Exit IP and delay"), crate::tr!("Раз в минуту, через туннель (cloudflare.com/cdn-cgi/trace)", "Once a minute, through the tunnel (cloudflare.com/cdn-cgi/trace)"), Some(Ic::Globe), s.b("showExitIp", true)) { app.toggle_setting("showExitIp"); }
+                if w::switch_row(ui, &p, crate::tr!("Показывать IP и пинг", "Show IP and ping"), "", Some(Ic::Globe), s.b("showExitIp", true)) { app.toggle_setting("showExitIp"); }
                 w::divider(ui, &p);
-                if w::switch_row(ui, &p, crate::tr!("Чёрный фон (AMOLED)", "Pure black (AMOLED)"), crate::tr!("Когда нет своего фото", "When there is no photo"), Some(Ic::Eye), s.b("amoled", false)) { app.toggle_setting("amoled"); }
+                if w::switch_row(ui, &p, crate::tr!("Чёрный фон (AMOLED)", "Pure black (AMOLED)"), "", Some(Ic::Eye), s.b("amoled", false)) { app.toggle_setting("amoled"); }
             });
         });
     }
@@ -1523,7 +1525,6 @@ fn save_profile(id: &str, value: &str) -> Result<(), String> {
 fn diagnose(p: &Profile) -> String {
     let mut out = String::new();
     out += &crate::trf!("Сервер: {} · {}:{}\n", "Server: {} · {}:{}\n", p.summary(), p.host, p.port);
-    if p.servers > 1 { out += &crate::trf!("Серверов в документе: {}{}\n", "Servers in the document: {}{}\n", p.servers, if p.balancer { crate::tr!(" (балансировщик)", " (balancer)") } else { "" }); }
     let state = store::get().clone();
     out += &crate::trf!("Маршрутизация: {}, режим: {}\n", "Routing: {}, mode: {}\n", routing_label(&state.s("mode")), mode_label(&state.s("tunnelMode")));
     let dns = crate::routing::system_resolvers();
@@ -1561,8 +1562,8 @@ fn current_palette() -> Palette {
     let s = store::get();
     let key = s.s("accent");
     let accent = match key.as_str() {
-        "photo" => backdrop::photo_accent(),
-        "system" => theme::system_accent(),
+        "photo" => backdrop::photo_accent().or_else(theme::system_accent),
+        "" | "system" => theme::system_accent(),
         k => theme::preset(k),
     }.unwrap_or(theme::ACCENTS[0].1);
     theme::palette(accent, s.b("amoled"))
@@ -1579,6 +1580,10 @@ impl App {
     /// One frame of the window (also driven headless by the screenshot test).
     pub fn frame(&mut self, ctx: &egui::Context) {
         self.frames += 1;
+        if self.tray_checked.map(|t| t.elapsed() >= Duration::from_secs(2)).unwrap_or(true) {
+            self.tray_checked = Some(Instant::now());
+            if let Some(tray) = &self._tray { super::tray::refresh(tray, &mut self.tray_light); }
+        }
         if self.frames == 2 { super::window_ready(self.start_hidden); }
         self.refresh_cache(ctx);
         if ctx.input(|i| i.viewport().close_requested()) {

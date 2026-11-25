@@ -52,7 +52,7 @@ fn main() -> eframe::Result<()> {
     std::panic::set_hook(Box::new(|info| { log::add(crate::trf!("Сбой: {info}", "Crash: {info}")); core::shutdown(); }));
     log::add(crate::trf!("Wraith {} запущен", "Wraith {} started", env!("CARGO_PKG_VERSION")));
 
-    let icon = egui::IconData { rgba: ui::icon::rgba(64), width: 64, height: 64 };
+    let icon = ui::app_icon(256);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title(ui::TITLE).with_inner_size([980.0, 860.0]).with_min_inner_size([480.0, 600.0]).with_icon(std::sync::Arc::new(icon)),
         centered: true,

@@ -47,7 +47,6 @@ impl Profile {
         let mut kind = if self.protocol.is_empty() { "JSON".to_string() } else { self.protocol.to_uppercase() };
         if !self.transport.is_empty() && !["tcp", "raw", "hysteria"].contains(&self.transport.as_str()) { kind += &format!(" · {}", self.transport); }
         if self.security == "reality" { kind += " · Reality" } else if self.security == "tls" { kind += " · TLS" }
-        if self.servers > 1 { return format!("{kind} · {} {}{}", self.servers, crate::util::plural(self.servers, crate::tr!("сервер", "server"), crate::tr!("сервера", "servers"), crate::tr!("серверов", "servers")), if self.balancer { crate::tr!(" · авто", " · auto") } else { "" }); }
         // The address stays out of the list (screenshots, screen sharing); it is in the config view.
         kind
     }
@@ -133,12 +132,12 @@ pub fn defaults() -> Obj {
         // Latency checks
         "pingType": "proxyGet", "pingUrl": "https://www.gstatic.com/generate_204", "pingTimeout": 5000, "pingMode": "keepalive", "sort": "none",
         // Subscriptions
-        "updateOnOpen": false, "autoUpdate": true, "userAgent": "", "sendHwid": true, "hwid": "", "clientNumericId": "",
+        "updateOnOpen": true, "autoUpdate": true, "userAgent": "", "sendHwid": true, "hwid": "", "clientNumericId": "",
         // App
         "theme": "dark", "minimizeToTray": true, "autostart": false, "connectOnStart": false, "checkUpdates": true, "debugLogs": false,
         "pingOnOpen": false, "quic": "allow",
         // Appearance (as on Android): accent, own photo with blur/dimming, greeting, exit IP on the home screen.
-        "accent": "sakura", "amoled": false, "bgBlur": 0.0, "bgDim": 0.35, "greetName": "", "showExitIp": true
+        "accent": "system", "amoled": false, "bgBlur": 0.0, "bgDim": 0.35, "greetName": "", "showExitIp": true
     });
     v.as_object().unwrap().clone()
 }

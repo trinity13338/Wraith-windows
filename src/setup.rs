@@ -18,7 +18,7 @@ pub struct Setup { pal: Palette, autostart: bool, desktop: bool, step: Arc<Mutex
 pub fn run() -> eframe::Result<()> {
     if !crate::util::is_admin() { crate::util::relaunch_elevated(""); return Ok(()); }
     crate::store::init();
-    let icon = egui::IconData { rgba: crate::ui::icon::rgba(64), width: 64, height: 64 };
+    let icon = crate::ui::app_icon(256);
     let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_title(crate::tr!("Установка Wraith", "Install Wraith")).with_inner_size([560.0, 440.0]).with_resizable(false).with_icon(Arc::new(icon)), centered: true, ..Default::default() };
     eframe::run_native(crate::tr!("Установка Wraith", "Install Wraith"), options, Box::new(|cc| {
         theme::install_fonts(&cc.egui_ctx);

@@ -136,8 +136,12 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// The palette before the store is loaded (installer, message boxes): the default accent, or the saved one.
-pub fn default_palette() -> Palette {
+/// The accent the settings ask for: a preset, the Windows accent (the default) or the photo's (resolved
+/// by the window; here the Windows accent stands in). The first preset when Windows has none.
+pub fn accent_color() -> Color32 {
     let key = crate::store::try_setting("accent");
-    palette(preset(&key).unwrap_or(ACCENTS[0].1), false)
+    match key.as_str() { "" | "system" | "photo" => system_accent(), k => preset(k) }.unwrap_or(ACCENTS[0].1)
 }
+
+/// The palette before the store is loaded (installer) or without a window.
+pub fn default_palette() -> Palette { palette(accent_color(), false) }

@@ -13,8 +13,12 @@ fn inside(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
     c
 }
 
-/// RGBA pixels, size×size, 4×4 supersampled. Rounded dark tile with the teal mark.
-pub fn rgba(size: u32) -> Vec<u8> {
+/// RGBA pixels, size×size: the default app icon (dark tile, the mark in the default accent).
+/// Without any setting it is what the .exe and the packaged PNG show.
+pub fn rgba(size: u32) -> Vec<u8> { tile(size, [0x0B, 0x0A, 0x10], [0xF2, 0xA7, 0xD8]) }
+
+/// Rounded tile in `bg` with the mark in `fg`, 4×4 supersampled.
+pub fn tile(size: u32, bg_rgb: [u8; 3], fg_rgb: [u8; 3]) -> Vec<u8> {
     let mut out = vec![0u8; (size * size * 4) as usize];
     let scale = 108.0 / size as f32; let radius = 24.0;
     for py in 0..size {
@@ -28,8 +32,28 @@ pub fn rgba(size: u32) -> Vec<u8> {
             let i = ((py * size + px) * 4) as usize;
             if bg == 0 { continue; }
             let t = fg as f32 / bg as f32;
-            let (r, g, b) = (lerp(0x0B, 0xA7, t), lerp(0x10, 0xEB, t), lerp(0x14, 0xD5, t));
-            out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = (bg * 255 / 16) as u8;
+            for c in 0..3 { out[i + c] = lerp(bg_rgb[c], fg_rgb[c], t); }
+            out[i + 3] = (bg * 255 / 16) as u8;
+        }
+    }
+    out
+}
+
+/// The mark alone on a transparent square (tray icons): it fills the square, so it reads at 16 px.
+pub fn mark(size: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    // The mark spans x 27–82, y 27–76 of the 108 grid; a 62-unit square around it keeps a thin margin.
+    let (x0, y0, span) = (23.5, 20.5, 62.0);
+    let scale = span / size as f32;
+    for py in 0..size {
+        for px in 0..size {
+            let mut fg = 0u32;
+            for sy in 0..4 { for sx in 0..4 {
+                let x = x0 + (px as f32 + (sx as f32 + 0.5) / 4.0) * scale; let y = y0 + (py as f32 + (sy as f32 + 0.5) / 4.0) * scale;
+                if inside(W, x, y) || inside(DOT, x, y) { fg += 1; }
+            } }
+            let i = ((py * size + px) * 4) as usize;
+            out[i] = rgb[0]; out[i + 1] = rgb[1]; out[i + 2] = rgb[2]; out[i + 3] = (fg * 255 / 16) as u8;
         }
     }
     out

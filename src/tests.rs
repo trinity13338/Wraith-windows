@@ -378,9 +378,10 @@ fn render_screens() {
     let mut app = crate::ui::app::App::with_context(&ctx, false);
     let mut textures: HashMap<TextureId, (usize, usize, Vec<Color32>)> = HashMap::new();
     let mut time = 0.0;
-    let screens = std::env::var("WRAITH_SCREENS").unwrap_or_else(|_| "home,home-on,servers,stats,stats-on,settings,routing,tunnel,subscriptions,ping,appearance,logs,import,sheet".into());
+    let screens = std::env::var("WRAITH_SCREENS").unwrap_or_else(|_| "home,home-on,home-hidden,servers,stats,stats-on,settings,routing,tunnel,subscriptions,ping,appearance,logs,import,sheet".into());
     for screen in screens.split(',') {
-        let on = screen.ends_with("-on");
+        let on = screen.ends_with("-on") || screen.ends_with("-hidden");
+        crate::store::update(|s| s.set("showExitIp", (!screen.ends_with("-hidden")).into()));
         if on {
             let id = crate::store::get().selected.clone();
             let name = crate::store::get().selected().map(|p| p.name.clone()).unwrap_or_default();
@@ -389,7 +390,7 @@ fn render_screens() {
             crate::stats::set_test_exit("185.220.101.42", "de", 68);
             for i in 0..60 { let k = (i as f64 / 6.0).sin().abs(); crate::stats::sample((k * 3_000_000.0) as i64 + 200_000, (k * 300_000.0) as i64 + 20_000); }
         } else { crate::core::set_test_status(crate::core::State::Off, "", 0, 0); }
-        app.show(screen.trim_end_matches("-on"));
+        app.show(screen.trim_end_matches("-on").trim_end_matches("-hidden"));
         let mut last = None;
         for _ in 0..40 {
             time += 0.05;
@@ -444,4 +445,11 @@ fn render_screens() {
         let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight);
         enc.write_header().unwrap().write_image_data(&bytes).unwrap();
     }
+}
+
+#[test]
+fn no_pool_counts_and_a_home_phrase() {
+    let p = profile(BALANCER);
+    assert_eq!(p.summary(), "VLESS · TLS", "a multi-server document reads like one server, without a pool count");
+    assert!(!crate::ui::app::greeting().is_empty());
 }

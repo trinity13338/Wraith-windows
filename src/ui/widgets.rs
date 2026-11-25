@@ -38,10 +38,12 @@ pub fn chip(ui: &mut Ui, p: &Palette, text: &str, icon: Option<Ic>, tint: Color3
     let (rect, _) = ui.allocate_exact_size(vec2(width, 38.0), Sense::hover());
     let painter = ui.painter();
     painter.rect(rect, CornerRadius::same(14), p.glass, Stroke::new(1.0_f32, p.stroke), egui::StrokeKind::Inside);
-    let mut x = rect.left() + 13.0;
-    if let Some(i) = icon { icons::at(painter, pos2(x + 8.0, rect.center().y), 16.0, i, p.muted); x += 23.0; }
-    let g = line(ui, text, font_m(14.5), tint, rect.right() - x - 10.0);
-    ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, tint);
+    // Icon and text stay centred in the cell whatever the numbers are.
+    let icon_w = if icon.is_some() { 23.0 } else { 0.0 };
+    let g = line(ui, text, font_m(14.5), tint, rect.width() - 20.0 - icon_w);
+    let x = rect.center().x - (icon_w + g.size().x) / 2.0;
+    if let Some(i) = icon { icons::at(painter, pos2(x + 8.0, rect.center().y), 16.0, i, p.muted); }
+    ui.painter().galley(pos2(x + icon_w, rect.center().y - g.size().y / 2.0), g, tint);
 }
 
 pub fn section_title(ui: &mut Ui, p: &Palette, text: &str) {

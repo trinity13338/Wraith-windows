@@ -127,13 +127,16 @@ fn agent(settings: &Obj, timeout: u64) -> Option<ureq::Agent> {
 pub fn fetch(settings: &Obj) -> Exit {
     let mut out = Exit { delay: -1, ..Default::default() };
     let Some(agent) = agent(settings, 6000) else { return out };
-    if let Ok(r) = agent.get("https://www.cloudflare.com/cdn-cgi/trace").call() {
-        if let Ok(text) = r.into_string() {
-            for line in text.lines().take(64) {
-                if let Some(v) = line.strip_prefix("ip=") { out.ip = v.trim().to_string(); }
-                if let Some(v) = line.strip_prefix("loc=") { out.country = v.trim().to_ascii_lowercase(); }
-            }
+    // The IPv4 address first (1.1.1.1 is only reachable over IPv4): a server with IPv6 would otherwise show
+    // its IPv6 exit. The name-based endpoint is the fallback for servers without IPv4.
+    for url in ["https://1.1.1.1/cdn-cgi/trace", "https://www.cloudflare.com/cdn-cgi/trace"] {
+        let Ok(r) = agent.get(url).call() else { continue };
+        let Ok(text) = r.into_string() else { continue };
+        for line in text.lines().take(64) {
+            if let Some(v) = line.strip_prefix("ip=") { out.ip = v.trim().to_string(); }
+            if let Some(v) = line.strip_prefix("loc=") { out.country = v.trim().to_ascii_lowercase(); }
         }
+        if !out.ip.is_empty() { break; }
     }
     // One HTTPS request through the tunnel, timed: what a browser would feel. The better of two.
     let url = settings.s_or("pingUrl", "https://www.gstatic.com/generate_204");
