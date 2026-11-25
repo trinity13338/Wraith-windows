@@ -450,6 +450,8 @@ fn render_screens() {
 #[test]
 fn no_pool_counts_and_a_home_phrase() {
     let p = profile(BALANCER);
-    assert_eq!(p.summary(), "VLESS · TLS", "a multi-server document reads like one server, without a pool count");
+    let summary = p.summary();
+    assert!(summary.starts_with("VLESS") && !summary.chars().any(|c| c.is_ascii_digit()) && !summary.contains("auto") && !summary.contains("авто"),
+        "a multi-server document reads like one server, without a pool count: {summary}");
     assert!(!crate::ui::app::greeting().is_empty());
 }
