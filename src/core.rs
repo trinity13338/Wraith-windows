@@ -76,7 +76,7 @@ pub fn disconnect() {
     });
 }
 /// Synchronous stop for application exit: the Windows proxy must never stay pointed at a dead port.
-pub fn shutdown() { stop_running(true); }
+pub fn shutdown() { stop_running(true); crate::store::flush(); }
 
 fn start(profile: &Profile, session: u64) -> Result<(), String> {
     let state = crate::store::get().clone();

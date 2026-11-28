@@ -220,13 +220,13 @@ pub fn display_name(name: &str) -> String {
     name.trim().to_string()
 }
 
-/// State of the connect pill's running packets, kept across frames.
+/// State of the connect pill's wave, kept across frames.
 #[derive(Clone, Copy, Default)]
-struct Lanes { up: f32, down: f32, up_speed: f32, down_speed: f32, presence: f32, last: f64 }
+struct Wave { phase: f32, speed: f32, amp: f32, smooth: f32, last: f64 }
 
-/// The connect control: a wide pill. Off it says what it does. On, packets run through it in two
-/// lanes (upload to the right on top, download to the left below), each as fast as its traffic.
-/// While connecting the packets dash quickly and blink, as if knocking.
+/// The connect control: a wide pill with one line across it. Off, the line is straight and still.
+/// Tapped, it rises into a soft wave that runs: fast while connecting (like a Material 3 wavy progress
+/// indicator), then as fast and as high as the traffic.
 pub fn connect_button(ui: &mut Ui, p: &Palette, state: crate::core::State, rx: i64, tx: i64) -> Response {
     use crate::core::State;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 80.0), Sense::click());
@@ -234,86 +234,51 @@ pub fn connect_button(ui: &mut Ui, p: &Palette, state: crate::core::State, rx: i
     let id = response.id;
     let ctx = ui.ctx().clone();
     let now = ctx.input(|i| i.time);
-    let mut l: Lanes = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
-    let dt = if l.last == 0.0 { 0.0 } else { ((now - l.last) as f32).min(0.1) };
-    l.last = now;
-    let speed = |rate: i64| if busy { 240.0 } else { 38.0 + 46.0 * (1.0 + rate as f32 / 1024.0).log10().min(4.0) };
-    let ease = (dt / 0.9).min(1.0);
-    l.up_speed += (speed(tx) - l.up_speed) * ease; l.down_speed += (speed(rx) - l.down_speed) * ease;
-    l.up += l.up_speed * dt; l.down += l.down_speed * dt;
+    let mut w: Wave = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+    let dt = if w.last == 0.0 { 0.0 } else { ((now - w.last) as f32).min(0.1) };
+    w.last = now;
+    // 0 when quiet … 1 at about 10 MB/s.
+    let level = ((1.0 + (rx + tx).max(0) as f32 / 1024.0).log10() / 4.0).clamp(0.0, 1.0);
+    let (speed, amp) = if busy { (11.0, 4.5) } else if on { (2.2 + 9.0 * level, 3.5 + 3.5 * level) } else { (0.0, 3.0) };
+    let k = 1.0 - (-dt * 4.0).exp();
+    w.speed += (speed - w.speed) * k; w.amp += (amp - w.amp) * k;
     let target = if on || busy { 1.0 } else { 0.0 };
-    l.presence += (target - l.presence) * (dt / 0.5).min(1.0) * 3.0;
-    l.presence = l.presence.clamp(0.0, 1.0);
-    ctx.data_mut(|d| d.insert_temp(id, l));
+    w.smooth += (target - w.smooth) * (1.0 - (-dt * 5.0).exp());
+    if (target - w.smooth).abs() < 0.002 { w.smooth = target; }
+    w.phase = (w.phase + w.speed * dt) % (std::f32::consts::TAU * 1000.0);
+    ctx.data_mut(|d| d.insert_temp(id, w));
 
     let fill_t = ctx.animate_value_with_time(id.with("fill"), if on { 1.0 } else if busy { 0.55 } else { 0.0 }, 0.45);
     let fill = if fill_t <= 0.0 { p.glass_high } else { lerp(p.glass_high, p.accent, fill_t) };
-    let ink = lerp(p.text, p.on_accent, ctx.animate_bool_with_time(id.with("ink"), on || busy, 0.45));
+    let ink = lerp(p.accent, p.on_accent, ctx.animate_bool_with_time(id.with("ink"), on || busy, 0.45));
     let pressed = response.is_pointer_button_down_on();
     let rect = if pressed { rect.shrink2(vec2(rect.width() * 0.0175, 1.4)) } else { rect };
     let painter = ui.painter_at(rect.expand(2.0));
     painter.rect(rect, CornerRadius::same(40), fill, Stroke::new(1.0_f32, if on || busy { Color32::TRANSPARENT } else { p.stroke }), egui::StrokeKind::Inside);
     if response.hovered() && !pressed { painter.rect_filled(rect, CornerRadius::same(40), alpha(ink, 0.05)); }
 
-    if l.presence > 0.01 {
-        let area = rect.shrink2(vec2(26.0, 0.0));
-        let blink = if busy { 0.45 + 0.55 * (0.5 + 0.5 * ((now as f32) * std::f32::consts::TAU / 0.84).sin()) } else { 1.0 };
-        lane(&painter, area, area.center().y - 9.0, l.up, true, blink * 0.75 * l.presence, 0, ink);
-        lane(&painter, area, area.center().y + 9.0, l.down, false, blink * l.presence, 3, ink);
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    // Off: flat. On: a sine whose crests travel to the right; `smooth` raises it. The ends fade out.
+    let area = rect.shrink2(vec2(26.0, 0.0));
+    let (left, width, cy) = (area.left(), area.width(), area.center().y);
+    let wave_k = std::f32::consts::TAU / 28.0;
+    let mut points = Vec::with_capacity((width / 2.0) as usize + 2);
+    let mut x = 0.0;
+    loop {
+        points.push(pos2(left + x, cy + w.amp * w.smooth * (x * wave_k - w.phase).sin()));
+        if x >= width { break; }
+        x = (x + 2.0).min(width);
     }
-    if l.presence < 0.3 {
-        let a = 1.0 - l.presence / 0.3;
-        let g = ui.painter().layout_no_wrap(crate::tr!("Подключиться", "Connect").into(), font_m(21.0), alpha(ink, a));
-        let total = 24.0 + 12.0 + g.size().x;
-        let x = rect.center().x - total / 2.0;
-        icons::at(&painter, pos2(x + 12.0, rect.center().y), 24.0, Ic::Power, alpha(p.accent, a));
-        painter.galley(pos2(x + 36.0, rect.center().y - g.size().y / 2.0), g, ink);
-    }
+    let fade = 30.0;
+    painter.add(egui::Shape::line(points, egui::epaint::PathStroke::new_uv(5.0_f32, move |_r, pos| {
+        alpha(ink, (((pos.x - left).min(left + width - pos.x)) / fade).clamp(0.0, 1.0))
+    })));
+    // 60 frames a second while it changes or connects, 30 for the steady wave: the whole window repaints.
+    if w.smooth != target || busy { ctx.request_repaint_after(std::time::Duration::from_millis(16)); } else if w.speed > 0.01 { ctx.request_repaint_after(std::time::Duration::from_millis(33)); }
+    let label = if on { crate::tr!("Отключиться", "Disconnect") } else if busy { crate::tr!("Подключение…", "Connecting…") } else { crate::tr!("Подключиться", "Connect") };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// One repeating strip of packets of different sizes with gaps, sliding by `offset`; comets with a fading tail.
-fn lane(painter: &egui::Painter, area: Rect, cy: f32, offset: f32, rightwards: bool, a: f32, seed: usize, ink: Color32) {
-    const LENGTHS: [f32; 8] = [22.0, 38.0, 14.0, 28.0, 46.0, 18.0, 32.0, 12.0];
-    let (h, fade, gap) = (6.0, 34.0, 9.0);
-    let extra = |i: usize| ((i * 7 + seed * 3) % 5) as f32 * 6.0;
-    let strip: f32 = (0..LENGTHS.len()).map(|i| LENGTHS[(i + seed) % 8] + gap + extra(i)).sum();
-    let width = area.width();
-    let mut start = -(offset % strip);
-    while start < width {
-        let mut x = start;
-        for i in 0..LENGTHS.len() {
-            let len = LENGTHS[(i + seed) % 8];
-            let left = if rightwards { x } else { width - x - len };
-            let mid = left + len / 2.0;
-            let edge = ((mid.min(width - mid)) / fade).clamp(0.0, 1.0);
-            if edge > 0.0 && left < width && left + len > 0.0 {
-                let k = a * edge;
-                comet(painter, Rect::from_min_size(pos2(area.left() + left, cy - h / 2.0), vec2(len, h)), ink, k, rightwards);
-            }
-            x += len + gap + extra(i);
-        }
-        start += strip;
-    }
-}
-/// A rounded bar with a horizontal alpha gradient: solid head, transparent tail.
-fn comet(painter: &egui::Painter, r: Rect, ink: Color32, k: f32, rightwards: bool) {
-    let n = 10; let mut mesh = egui::Mesh::default();
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        let x = r.left() + r.width() * t;
-        let head = if rightwards { t } else { 1.0 - t };
-        let a = k * if head < 0.5 { head * 1.2 } else { 0.6 + (head - 0.5) * 0.8 };
-        // Rounded ends: the strip narrows at both tips.
-        let tip = ((t.min(1.0 - t) * r.width()) / (r.height() / 2.0)).min(1.0);
-        let half = r.height() / 2.0 * (1.0 - (1.0 - tip).powi(2)).sqrt();
-        let c = alpha(ink, a);
-        mesh.colored_vertex(pos2(x, r.center().y - half), c); mesh.colored_vertex(pos2(x, r.center().y + half), c);
-        if i > 0 { let b = (i as u32 - 1) * 2; mesh.add_triangle(b, b + 1, b + 2); mesh.add_triangle(b + 1, b + 3, b + 2); }
-    }
-    painter.add(mesh);
-}
 
 /// Floating navigation: a glass pill for the main sections and a separate round settings button.
 pub fn floating_nav(ui: &mut Ui, p: &Palette, items: &[(Ic, &str)], selected: usize, settings: bool) -> Option<usize> {

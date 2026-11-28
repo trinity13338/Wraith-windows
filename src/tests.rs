@@ -41,16 +41,17 @@ fn provider_balancer_kept_and_inlets_remapped() {
     let built = crate::xray::build(&st, &p, &["192.168.1.1".into()], 1234).unwrap();
     let c = &built.config;
     let rules = c.o("routing").unwrap().objects("rules");
-    let catch = rules.iter().find(|r| r.s("balancerTag") == "auto").expect("balancer rule");
+    let catch = rules.iter().find(|r| r.s("balancerTag") == "auto" && r.has("inboundTag")).expect("balancer rule");
     let tags: Vec<String> = catch.a("inboundTag").unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     assert!(tags.contains(&"http".to_string()) && tags.contains(&"socks".to_string()));
     assert_eq!(built.proxy_tags, vec!["proxy-nl", "proxy-de", "proxy-fi"]);
     // Security: no provider API listener, no log file paths.
     assert!(!c.has("api"));
     assert!(!c.o("log").unwrap().has("access") && !c.o("log").unwrap().has("error"));
-    // System DNS by default, queried directly.
-    assert_eq!(c.o("dns").unwrap().a("servers").unwrap()[0], json!("192.168.1.1"));
-    assert!(rules.iter().any(|r| r.s("port") == "53" && r.a("ip").map(|a| a.contains(&json!("192.168.1.1"))).unwrap_or(false)));
+    // DNS-over-HTTPS to 1.1.1.1 by default, through the tunnel (the balancer here), never the system's resolver directly.
+    assert_eq!(c.o("dns").unwrap().a("servers").unwrap()[0], json!(crate::xray::DOH[0]));
+    assert!(rules.iter().any(|r| r.s("port") == "443" && r.s("balancerTag") == "auto" && r.a("ip").map(|a| a.contains(&json!("1.1.1.1"))).unwrap_or(false)));
+    assert!(!rules.iter().any(|r| r.s("port") == "53" && r.a("ip").map(|a| a.contains(&json!("192.168.1.1"))).unwrap_or(false)));
 }
 
 #[test]

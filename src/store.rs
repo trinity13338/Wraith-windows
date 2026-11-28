@@ -57,13 +57,42 @@ pub fn update<R>(f: impl FnOnce(&mut AppState) -> R) -> R {
     save(); r
 }
 
+/// The change is visible at once (the revision moves); encrypting and writing happen on a background
+/// thread, and changes in quick succession are written once. [flush] writes what is pending (on exit).
 pub fn save() {
-    let json = { serde_json::to_vec(&*get()).unwrap_or_default() };
     REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    CHANGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if cfg!(test) { write_now(); return; }
+    let tx = WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || while rx.recv().is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            while rx.try_recv().is_ok() {}
+            write_now();
+        });
+        std::sync::Mutex::new(tx)
+    });
+    let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(());
+}
+
+static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRITER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<()>>> = std::sync::OnceLock::new();
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Writes pending changes now; called before the process exits.
+pub fn flush() { if STATE.get().is_some() && WRITTEN.load(std::sync::atomic::Ordering::SeqCst) < CHANGES.load(std::sync::atomic::Ordering::SeqCst) { write_now(); } }
+
+fn write_now() {
+    let _g = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let target = CHANGES.load(std::sync::atomic::Ordering::SeqCst);
+    if target <= WRITTEN.load(std::sync::atomic::Ordering::SeqCst) && target != 0 { return; }
+    let json = { serde_json::to_vec(&*get()).unwrap_or_default() };
     match protect(&json, true) {
         Ok(data) => {
             let tmp = file().with_extension("dat.new");
             if std::fs::write(&tmp, data).is_ok() { let _ = std::fs::rename(&tmp, file()); }
+            WRITTEN.store(target, std::sync::atomic::Ordering::SeqCst);
         }
         Err(e) => crate::log::add(crate::trf!("Не удалось сохранить настройки: {e}", "Could not save the settings: {e}")),
     }

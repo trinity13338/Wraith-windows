@@ -94,10 +94,12 @@ pub struct Exit { pub ip: String, pub country: String, pub delay: i64 }
 
 static EXIT: Mutex<Option<Exit>> = Mutex::new(None);
 static EXIT_DUE: Mutex<Option<Instant>> = Mutex::new(None);
+/// The exit address is asked every 10 minutes (the delay every minute).
+static IP_DUE: Mutex<Option<Instant>> = Mutex::new(None);
 static EXIT_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn exit() -> Exit { EXIT.lock().unwrap().clone().unwrap_or_default() }
-pub fn reset_exit() { *EXIT.lock().unwrap() = None; *EXIT_DUE.lock().unwrap() = Some(Instant::now() + Duration::from_millis(1500)); }
+pub fn reset_exit() { *EXIT.lock().unwrap() = None; *EXIT_DUE.lock().unwrap() = Some(Instant::now() + Duration::from_millis(1500)); *IP_DUE.lock().unwrap() = None; }
 
 /// Once a minute while connected (if «Внешний IP и задержка» is on): who the sites see, and how long a request takes.
 pub fn tick_exit(settings: &Obj) {
@@ -105,9 +107,12 @@ pub fn tick_exit(settings: &Obj) {
     let due = EXIT_DUE.lock().unwrap().map(|t| Instant::now() >= t).unwrap_or(true);
     if !due || EXIT_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) { return; }
     *EXIT_DUE.lock().unwrap() = Some(Instant::now() + Duration::from_secs(60));
+    let previous = exit();
+    let need_ip = IP_DUE.lock().unwrap().map(|t| Instant::now() >= t).unwrap_or(true) || previous.ip.is_empty();
+    if need_ip { *IP_DUE.lock().unwrap() = Some(Instant::now() + Duration::from_secs(600)); }
     let settings = settings.clone();
     std::thread::spawn(move || {
-        let info = fetch(&settings);
+        let info = fetch(&settings, if need_ip { None } else { Some(previous) });
         if crate::core::status().state == crate::core::State::Connected { *EXIT.lock().unwrap() = Some(info); }
         EXIT_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
         crate::ui::repaint();
@@ -124,9 +129,11 @@ fn agent(settings: &Obj, timeout: u64) -> Option<ureq::Agent> {
         .user_agent(&format!("Wraith/{}/Linux", env!("CARGO_PKG_VERSION"))).build())
 }
 
-pub fn fetch(settings: &Obj) -> Exit {
-    let mut out = Exit { delay: -1, ..Default::default() };
+/// The delay is measured every time; the address only when there is no [previous] one.
+pub fn fetch(settings: &Obj, previous: Option<Exit>) -> Exit {
+    let mut out = previous.map(|p| Exit { delay: -1, ..p }).unwrap_or(Exit { delay: -1, ..Default::default() });
     let Some(agent) = agent(settings, 6000) else { return out };
+    if out.ip.is_empty() {
     // The IPv4 address first (1.1.1.1 is only reachable over IPv4): a server with IPv6 would otherwise show
     // its IPv6 exit. The name-based endpoint is the fallback for servers without IPv4.
     for url in ["https://1.1.1.1/cdn-cgi/trace", "https://www.cloudflare.com/cdn-cgi/trace"] {
@@ -137,6 +144,7 @@ pub fn fetch(settings: &Obj) -> Exit {
             if let Some(v) = line.strip_prefix("loc=") { out.country = v.trim().to_ascii_lowercase(); }
         }
         if !out.ip.is_empty() { break; }
+    }
     }
     // One HTTPS request through the tunnel, timed: what a browser would feel. The better of two.
     let url = settings.s_or("pingUrl", "https://www.gstatic.com/generate_204");

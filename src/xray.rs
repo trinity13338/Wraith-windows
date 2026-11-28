@@ -58,6 +58,7 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     if !client_inlets.is_empty() { remap_inbound_rules(&mut root, &client_inlets, &ours); }
     let app = ensure_app_outbounds(&mut root)?;
     let dns_tag = ensure_dns_outbound(&mut root);
+    let own_doh = root.o("dns").and_then(|d| d.a("servers")).map(|a| a.iter().any(|v| v.as_str() == Some(DOH[0]))).unwrap_or(false);
     let resolver_ips = observatory_dns_ips(&root);
     let has_auto = has_balancer(&root, AUTO_BALANCER);
     let provider_balancing = provider_balancing(&root);
@@ -67,8 +68,15 @@ pub fn build(state: &AppState, profile: &Profile, system_dns: &[String], metrics
     let rules = child_list(routing, "rules");
     let mut head: Vec<Value> = vec![];
     if tun { head.push(json!({"type": "field", "inboundTag": ["tun-in"], "network": "tcp,udp", "port": "53", "outboundTag": dns_tag})); }
-    // The system's own resolvers live in the local/ISP network and are queried directly, as without VPN.
-    if routing::custom_dns(settings).is_empty() && !system_dns.is_empty() {
+    if own_doh {
+        // Wraith's DNS-over-HTTPS goes through the tunnel (the balancer when there is one), whatever other rules say.
+        let mut r = obj! {"type" => "field", "ip" => json!(["1.1.1.1", "1.0.0.1"]), "port" => "443"};
+        if has_auto { r.insert("balancerTag".into(), AUTO_BALANCER.into()); }
+        else if provider_balancing && !main_balancer.is_empty() { r.insert("balancerTag".into(), main_balancer.clone().into()); }
+        else { r.insert("outboundTag".into(), app[0].clone().into()); }
+        head.push(r.into());
+    } else if routing::custom_dns(settings).is_empty() && !system_dns.is_empty() {
+        // The provider's DNS falls back to the system's resolvers, which live in the local/ISP network.
         head.push(json!({"type": "field", "ip": system_dns, "port": "53", "outboundTag": app[1]}));
     }
     // Observatory/balancers resolve their candidates independently of the balancer they measure.
@@ -316,11 +324,17 @@ pub fn unique_tag(outbounds: &[Value], base: &str) -> String {
 }
 
 /// Provider DNS (with «DNS из JSON»), else the user's own DNS (with «Свой DNS»), else the system's resolvers.
+/// The default resolvers, reached through the tunnel.
+pub const DOH: [&str; 2] = ["https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"];
+
 fn dns(state: &AppState, p: &Profile, system_dns: &[String]) -> Obj {
     let s = &state.settings;
     let mut value = routing::custom_dns(s);
     if value.is_empty() && s.b("dnsFromJson", false) { value = routing::dns_address(routing::profile_for(state, p).as_ref(), "Remote"); }
-    let mut servers: Vec<Value> = if !value.is_empty() { vec![value.clone().into()] } else { system_dns.iter().map(|ip| ip.clone().into()).collect() };    if servers.is_empty() { servers.push(routing::DEFAULT_CUSTOM.into()); }
+    // Without an own or provider DNS: DNS-over-HTTPS to 1.1.1.1 through the tunnel (a rule routes it to the
+    // proxy), never the provider's resolver in the clear; this also works behind white lists.
+    let _ = system_dns;
+    let servers: Vec<Value> = if !value.is_empty() { vec![value.clone().into()] } else { DOH.iter().map(|u| (*u).into()).collect() };
     obj! {"servers" => servers, "queryStrategy" => match crate::model::ip_mode(s).as_str() { "v4" => "UseIPv4", "v6" => "UseIPv6", _ => "UseIP" }}
 }
 
